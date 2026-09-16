@@ -240,8 +240,7 @@ impl CanonicalFingerprint {
 
     /// Compute a canonical fingerprint from DER-encoded certificate bytes.
     pub(crate) fn from_der(der: &[u8]) -> Self {
-        use sha2::{Digest as _, Sha256};
-        let digest = Sha256::digest(der);
+        let digest = super::tls_backend::sha256(der);
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         Self(hex)
     }

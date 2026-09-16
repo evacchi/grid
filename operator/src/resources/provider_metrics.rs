@@ -16,7 +16,6 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -161,6 +160,12 @@ async fn scrape_provider_signals(
     let observations = crate::signals::parse(&text)
         .into_iter()
         .filter(|o| wanted.contains(o.metric.as_str()))
+        // A local sample's freshness is its collection time, so drop any trailing
+        // timestamp. Only relayed peer samples carry a per-sample stamp.
+        .map(|mut o| {
+            o.timestamp_ms = None;
+            o
+        })
         .collect();
     Some((identity.to_owned(), observations))
 }
@@ -574,7 +579,7 @@ async fn resolve_tls_config(
     tls_config: Option<&EndpointTlsConfig>,
     client: Option<&kube::Client>,
     provider_identity: &str,
-) -> Result<Option<Arc<rustls::ClientConfig>>, (super::endpoint_tls::TlsFailureReason, String)> {
+) -> Result<Option<super::tls_backend::ClientTlsConfig>, (super::endpoint_tls::TlsFailureReason, String)> {
     super::endpoint_tls::resolve_tls_config(tls_config, client, provider_identity).await
 }
 

@@ -16,7 +16,10 @@ use std::{
 use futures::StreamExt as _;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
-use crate::metrics_scraper::{MetricsScrapeError, scrape_metrics};
+use crate::{
+    metrics_scraper::{MetricsScrapeError, scrape_metrics_with_date},
+    resources::tls_backend::{self, ClientTlsConfig},
+};
 
 /// The single mTLS path the coarse rollup is served and polled on.
 ///
@@ -46,6 +49,13 @@ pub struct Observation {
     pub labels: BTreeMap<String, String>,
     /// Reported value.
     pub value: f64,
+    /// Optional per-sample exposition timestamp, epoch milliseconds.
+    ///
+    /// `None` for a locally scraped sample, whose freshness is the target's
+    /// collection time. On a relayed peer sample the poller sets it to the
+    /// peer's age re-expressed on this site's clock, preserving per-sample
+    /// freshness across the relay.
+    pub timestamp_ms: Option<i64>,
 }
 
 /// Parse an exposition response into observations.
@@ -92,10 +102,16 @@ fn parse_sample(line: &str) -> Option<Observation> {
     } else {
         (BTreeMap::new(), rest)
     };
+    let mut fields = rest.split_whitespace();
+    let value = fields.next()?.parse().ok()?;
+    // A Prometheus line may carry a trailing millisecond timestamp. Keep it (the
+    // peer poller reads it to preserve age), and tolerate a bad one as absent.
+    let timestamp_ms = fields.next().and_then(|field| field.parse::<i64>().ok());
     Some(Observation {
         metric: metric.to_owned(),
         labels,
-        value: rest.split_whitespace().next()?.parse().ok()?,
+        value,
+        timestamp_ms,
     })
 }
 
@@ -202,8 +218,20 @@ pub struct SignalStore {
 /// gateway probe pins with, so a site is known by one hash everywhere.
 #[must_use]
 pub fn leaf_fingerprint(der: &[u8]) -> String {
-    use sha2::{Digest as _, Sha256};
-    Sha256::digest(der).iter().map(|b| format!("{b:02x}")).collect()
+    tls_backend::sha256(der).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Normalise a declared fingerprint to the form [`leaf_fingerprint`] emits.
+///
+/// Strips colons and lowercases so the raw-compare serve side agrees with the
+/// separator-tolerant poll side.
+#[must_use]
+pub fn canonical_fingerprint(declared: &str) -> String {
+    declared
+        .chars()
+        .filter(|c| *c != ':')
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// What this site holds about one peer.
@@ -215,10 +243,12 @@ pub struct PeerRecord {
     /// asserted its labels could assert past any policy written about it.
     pub labels: BTreeMap<String, String>,
 
-    /// Leaf fingerprints from `spec.trust.canonicalFingerprints`.
+    /// Leaf fingerprints that name this peer, from
+    /// `spec.trust.canonicalFingerprints`.
     ///
-    /// The caller's identity: a peer is whoever presents one of these. Empty
-    /// refuses the peer, so a site is served only once its pins are set.
+    /// A pin is the identity: a caller is whoever presents one of these keys.
+    /// Empty means unenrolled, and the serve and poll paths refuse it rather
+    /// than falling back to a certificate name.
     pub pins: Vec<String>,
 }
 
@@ -380,12 +410,31 @@ impl SignalStore {
         collect: &[String],
         reader: Option<&BTreeMap<String, String>>,
     ) -> (String, Duration) {
-        let denied = self.denied(reader);
+        self.render_with(target, collect, &self.denied(reader))
+    }
+
+    /// Render every target, applying no access policy.
+    ///
+    /// For a `Local` caller only, the site's own data plane, which is entitled
+    /// to the whole grid view. Access policy scopes peer reads, not the site.
+    #[must_use]
+    pub fn render_unrestricted(&self, target: Option<&str>, collect: &[String]) -> (String, Duration) {
+        self.render_with(target, collect, &std::collections::BTreeSet::new())
+    }
+
+    /// Shared render body over a precomputed set of denied targets.
+    fn render_with(
+        &self,
+        target: Option<&str>,
+        collect: &[String],
+        denied: &std::collections::BTreeSet<String>,
+    ) -> (String, Duration) {
         let Ok(guard) = self.inner.read() else {
             return (String::new(), Duration::ZERO);
         };
         let now = Instant::now();
         let now_wall = SystemTime::now();
+        let now_ms = wall_millis(now_wall, Duration::ZERO);
         let mut out = String::new();
         let mut oldest = Duration::ZERO;
         for (name, held) in guard.iter() {
@@ -399,16 +448,17 @@ impl SignalStore {
             // derive from the age rather than store a wall clock that can jump.
             let age = now.saturating_duration_since(held.collected_at);
             let collected_at_ms = wall_millis(now_wall, age);
-            let mut used = false;
             for sample in held.samples.iter() {
                 if collect.is_empty() || collect.iter().any(|c| c == &sample.metric) {
-                    render_sample(&mut out, sample, collected_at_ms);
+                    // A relayed peer sample carries its own age-preserving stamp,
+                    // else the target's collection time.
+                    let stamp_ms = sample.timestamp_ms.unwrap_or(collected_at_ms);
+                    render_sample(&mut out, sample, stamp_ms);
                     out.push('\n');
-                    used = true;
+                    // Age bounds the whole response by the oldest sample emitted.
+                    let sample_age = Duration::from_millis(u64::try_from(now_ms.saturating_sub(stamp_ms)).unwrap_or(0));
+                    oldest = oldest.max(sample_age);
                 }
-            }
-            if used {
-                oldest = oldest.max(now.saturating_duration_since(held.collected_at));
             }
         }
         (out, oldest)
@@ -429,9 +479,15 @@ impl SignalStore {
     }
 }
 
-/// Render one observation as an exposition line, without a timestamp.
-fn render_sample(out: &mut String, o: &Observation, collected_at_ms: i64) {
-    // Written into the caller's buffer to avoid a per-label allocation.
+/// Render one observation as an exposition line, stamped with `stamp_ms`.
+///
+/// The trailing timestamp is load-bearing: the caller passes the target's
+/// collection time, or a relayed peer sample's own age-preserving stamp.
+fn render_sample(out: &mut String, o: &Observation, stamp_ms: i64) {
+    // Written into the caller's buffer rather than returned. Building a string
+    // per label, collecting them, joining them and then formatting the result
+    // allocated once per label plus four more per sample, all of it discarded
+    // into a buffer that was going to be grown anyway.
     out.push_str(&o.metric);
     if !o.labels.is_empty() {
         out.push('{');
@@ -449,7 +505,7 @@ fn render_sample(out: &mut String, o: &Observation, collected_at_ms: i64) {
     out.push(' ');
     out.push_str(&o.value.to_string());
     out.push(' ');
-    out.push_str(&collected_at_ms.to_string());
+    out.push_str(&stamp_ms.to_string());
 }
 
 /// Epoch milliseconds for an observation collected `age` ago.
@@ -612,7 +668,7 @@ fn classify(error: &MetricsScrapeError) -> PollOutcome {
 fn classify_transport(error: &(dyn std::error::Error + 'static)) -> PollOutcome {
     let mut current = Some(error);
     while let Some(err) = current {
-        if err.downcast_ref::<rustls::Error>().is_some() {
+        if tls_backend::is_tls_error(err) {
             return PollOutcome::Tls;
         }
         if let Some(io) = err.downcast_ref::<std::io::Error>() {
@@ -647,9 +703,8 @@ fn backoff(base: Duration, attempt: u32, peer: &str) -> Duration {
     scaled.saturating_add(jitter)
 }
 
-/// Reads each peer's signals endpoint directly.
 /// One peer's client config, verifying against the keys declared for it.
-fn peer_client_config(material: &PeerTlsMaterial, pins: &[String]) -> Result<rustls::ClientConfig, MetricsScrapeError> {
+fn peer_client_config(material: &PeerTlsMaterial, pins: &[String]) -> Result<ClientTlsConfig, MetricsScrapeError> {
     crate::metrics_scraper::build_pinned_client_config(
         &material.ca,
         material.identity.as_ref().map(|id| id.cert.as_slice()),
@@ -750,14 +805,14 @@ impl PollPeers {
     /// Returns the body, or nothing if every attempt failed. The outcome is
     /// recorded either way, because a peer that is never reachable has to be
     /// distinguishable from one that has nothing to say.
-    async fn poll_one(&self, peer: &str, url: &str, pins: &[String]) -> Option<String> {
-        // The guard owns the accounting, including the drop-mid-await path where
-        // the in-flight gauge would otherwise count a poll that had ended.
+    async fn poll_one(&self, peer: &str, url: &str, pins: &[String]) -> Option<(String, Option<SystemTime>)> {
+        // The guard owns the accounting, including the drop-mid-await path that
+        // used to leave the in-flight gauge counting a poll that had ended.
         let mut guard = PollGuard::enter(peer, self.slow_after);
 
         // Once per peer, not per attempt: this parses a private key.
         let tls = match self.tls.as_ref().map(|m| peer_client_config(m, pins)) {
-            Some(Ok(config)) => Some(Arc::new(config)),
+            Some(Ok(config)) => Some(config),
             Some(Err(error)) => {
                 tracing::warn!(peer, %error, "peer client config unusable; not polling");
                 guard.finish(PollOutcome::Config, 0);
@@ -765,9 +820,9 @@ impl PollPeers {
             },
             None => None,
         };
-        let (outcome, body) = self.attempt_until(peer, url, tls.as_ref(), guard.started).await;
-        guard.finish(outcome, body.as_ref().map_or(0, String::len));
-        body
+        let (outcome, result) = self.attempt_until(peer, url, tls.as_ref(), guard.started).await;
+        guard.finish(outcome, result.as_ref().map_or(0, |(body, _)| body.len()));
+        result
     }
 
     /// One request, abandoned if the process is stopping.
@@ -778,12 +833,12 @@ impl PollPeers {
     async fn scrape_or_stand_down(
         &self,
         url: &str,
-        tls: Option<&Arc<rustls::ClientConfig>>,
-    ) -> Option<Result<String, MetricsScrapeError>> {
+        tls: Option<&ClientTlsConfig>,
+    ) -> Option<Result<(String, Option<SystemTime>), MetricsScrapeError>> {
         tokio::select! {
             biased;
             () = self.shutdown.triggered() => None,
-            result = scrape_metrics(url, self.timeout, tls.cloned()) => Some(result),
+            result = scrape_metrics_with_date(url, self.timeout, tls.cloned()) => Some(result),
         }
     }
 
@@ -806,9 +861,9 @@ impl PollPeers {
         &self,
         peer: &str,
         url: &str,
-        tls: Option<&Arc<rustls::ClientConfig>>,
+        tls: Option<&ClientTlsConfig>,
         started: Instant,
-    ) -> (PollOutcome, Option<String>) {
+    ) -> (PollOutcome, Option<(String, Option<SystemTime>)>) {
         let attempts = self.attempts.max(1);
         let mut outcome = PollOutcome::Transport;
         for attempt in 0..attempts {
@@ -824,7 +879,7 @@ impl PollPeers {
             };
 
             match scrape {
-                Ok(text) => return (PollOutcome::Ok, Some(text)),
+                Ok(pair) => return (PollOutcome::Ok, Some(pair)),
                 Err(error) => {
                     outcome = classify(&error);
                     if attempt + 1 >= attempts || !outcome.is_retryable() {
@@ -856,8 +911,10 @@ impl PollPeers {
         let fetches = peer_urls(sites, &collect_query)
             .into_iter()
             .map(|(peer, url, pins)| async move {
-                let body = self.poll_one(&peer, &url, &pins).await?;
-                let observations = retain_origin(parse(&body), &peer);
+                let (body, date) = self.poll_one(&peer, &url, &pins).await?;
+                let now_ms = wall_millis(SystemTime::now(), Duration::ZERO);
+                let mut observations = retain_origin(parse(&body), &peer);
+                reexpress_peer_ages(&mut observations, date, now_ms);
                 Some((peer, observations))
             });
 
@@ -966,6 +1023,35 @@ fn retain_origin(observations: Vec<Observation>, peer: &str) -> Vec<Observation>
         .collect()
 }
 
+/// The largest relayed-sample age treated as plausible, one day.
+///
+/// A larger apparent age means the peer's clock is skewed or the timestamp is
+/// garbage. Such a sample is stamped fresh rather than trusted to be that old.
+const MAX_RELAY_AGE_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Re-express each relayed peer sample's age on this site's clock.
+///
+/// Age is the peer's `Date` minus the sample's own timestamp, both on the peer
+/// clock so no skew enters, then stamped as this site's `now` minus that age. A
+/// missing or implausible input falls back to `now`, never the peer's absolute
+/// clock, so a reader compares timestamps within one clock.
+fn reexpress_peer_ages(observations: &mut [Observation], date: Option<SystemTime>, now_ms: i64) {
+    let date_ms = date
+        .and_then(|when| when.duration_since(UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok());
+    for observation in observations.iter_mut() {
+        observation.timestamp_ms = match (date_ms, observation.timestamp_ms) {
+            (Some(date_ms), Some(sample_ms)) => {
+                let age = date_ms.saturating_sub(sample_ms);
+                (0..=MAX_RELAY_AGE_MS)
+                    .contains(&age)
+                    .then(|| now_ms.saturating_sub(age))
+            },
+            _ => None,
+        };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1010,10 +1096,79 @@ mod tests {
     }
 
     #[test]
-    fn a_trailing_timestamp_is_not_read_as_the_value() {
+    fn a_trailing_timestamp_is_kept_and_not_read_as_the_value() {
         let o = parse("m{a=\"b\"} 2 1700000000000");
         let first = o.first().expect("line must parse");
         assert!((first.value - 2.0).abs() < f64::EPSILON, "value, not timestamp");
+        assert_eq!(
+            first.timestamp_ms,
+            Some(1_700_000_000_000),
+            "the trailing timestamp is kept"
+        );
+
+        let none = parse("m{a=\"b\"} 2");
+        assert_eq!(
+            none.first().expect("line must parse").timestamp_ms,
+            None,
+            "no timestamp is None"
+        );
+    }
+
+    #[test]
+    fn reexpress_peer_ages_preserves_age_and_rejects_implausible() {
+        let obs = |ts: Option<i64>| Observation {
+            metric: "m".to_owned(),
+            labels: BTreeMap::new(),
+            value: 1.0,
+            timestamp_ms: ts,
+        };
+        let now_ms = 10_000_000_000_000;
+        let date_ms = 5_000_000_000_000;
+        // Peer scraped 30s before its response Date. The age survives, re-expressed
+        // as this site's now minus 30s, not the peer's absolute 4_999_970_000_000.
+        let mut samples = vec![
+            obs(Some(date_ms - 30_000)),               // 30s old
+            obs(Some(date_ms + 1_000)),                // future on the peer clock: rejected
+            obs(Some(date_ms - MAX_RELAY_AGE_MS - 1)), // implausibly old: rejected
+            obs(None),                                 // no peer timestamp: dropped to fallback
+        ];
+        reexpress_peer_ages(
+            &mut samples,
+            Some(UNIX_EPOCH + Duration::from_millis(u64::try_from(date_ms).expect("positive"))),
+            now_ms,
+        );
+        let got: Vec<Option<i64>> = samples.iter().map(|o| o.timestamp_ms).collect();
+        // Age preserved on this clock. Future, implausible, and missing all fall back.
+        assert_eq!(got, vec![Some(now_ms - 30_000), None, None, None]);
+    }
+
+    #[test]
+    fn a_relayed_sample_renders_its_own_age_not_the_relay_time() {
+        // A sample stamped one hour ago must render an hour old even though the
+        // store just cached it, so the peer's freshness survives the relay.
+        let hour_ago_ms = wall_millis(SystemTime::now(), Duration::from_secs(3600));
+        let store = SignalStore::new();
+        store.refresh(
+            BTreeMap::from([(
+                "pool-a".to_owned(),
+                vec![Observation {
+                    metric: "m".to_owned(),
+                    labels: BTreeMap::new(),
+                    value: 1.0,
+                    timestamp_ms: Some(hour_ago_ms),
+                }],
+            )]),
+            Duration::from_secs(60),
+        );
+        let (body, oldest) = store.render_unrestricted(None, &[]);
+        assert!(
+            body.trim_end().ends_with(&hour_ago_ms.to_string()),
+            "renders the sample's own stamp: {body}"
+        );
+        assert!(
+            oldest >= Duration::from_secs(3500),
+            "Age reflects the sample age, not the relay: {oldest:?}"
+        );
     }
 
     #[test]
@@ -1097,8 +1252,11 @@ mod tests {
         let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
         assert_eq!(classify_transport(&refused), PollOutcome::Refused);
 
-        let tls = rustls::Error::DecryptError;
-        assert_eq!(classify_transport(&tls), PollOutcome::Tls);
+        #[cfg(not(feature = "fips"))]
+        let tls_err = rustls::Error::DecryptError;
+        #[cfg(feature = "fips")]
+        let tls_err = openssl::error::ErrorStack::get();
+        assert_eq!(classify_transport(&tls_err), PollOutcome::Tls);
     }
 
     #[test]
@@ -1364,6 +1522,35 @@ mod tests {
         assert_eq!(leaf_fingerprint(b"a").len(), 64, "sha256 as lowercase hex");
         assert_eq!(leaf_fingerprint(b"a"), leaf_fingerprint(b"a"), "stable");
         assert_ne!(leaf_fingerprint(b"a"), leaf_fingerprint(b"b"), "distinguishing");
+    }
+
+    #[test]
+    fn a_non_canonical_declared_fingerprint_authorizes_and_authenticates() {
+        // A pin declared with uppercase hex and colons must both authorize (serve
+        // side, raw compare) and authenticate (poll side) the same peer.
+        let leaf = leaf_fingerprint(b"peer-leaf-der");
+        let declared: String = leaf
+            .char_indices()
+            .flat_map(|(i, c)| {
+                let upper = c.to_ascii_uppercase();
+                if i > 0 && i.is_multiple_of(2) {
+                    vec![':', upper]
+                } else {
+                    vec![upper]
+                }
+            })
+            .collect();
+        assert_ne!(declared, leaf);
+        assert_eq!(canonical_fingerprint(&declared), leaf);
+
+        let record = PeerRecord {
+            labels: BTreeMap::from([("tier".to_owned(), "gold".to_owned())]),
+            pins: vec![canonical_fingerprint(&declared)],
+        };
+        let identities = PeerIdentities::new();
+        identities.set(BTreeMap::from([("peer".to_owned(), record)]));
+        assert!(identities.resolve_by_key(&leaf).is_some());
+        assert_eq!(identities.pins_for("peer"), vec![leaf]);
     }
 
     #[test]

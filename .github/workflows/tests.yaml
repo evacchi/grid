@@ -99,3 +99,68 @@ jobs:
 
       - name: Unit tests
         run: make test-unit
+
+  # ----------------------------------------------------------------------------
+  # FIPS build (operator + overlay-sync under system OpenSSL)
+  # ----------------------------------------------------------------------------
+
+  fips:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The fips feature dynamically links libssl/libcrypto.
+      - name: Install system OpenSSL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6190aa5fb88a88ee71c12769924bbe63a9ab152e # 1.96.0
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-rust-1.96.0-cargo-fips-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-1.96.0-cargo-fips-
+          save-always: true
+
+      # --manifest-path: overlay-sync resolves as its own workspace, so
+      # -p ... --features is rejected. Scope to lib+bins (operator has a lib,
+      # overlay-sync is bin-only) to skip the test-only ServerName warnings in
+      # operator tls_probe.rs.
+      - name: Clippy (fips)
+        run: |
+          cargo clippy --manifest-path operator/Cargo.toml --no-default-features --features fips --lib --bins -- -D warnings
+          cargo clippy --manifest-path overlay-sync/Cargo.toml --no-default-features --features fips --bins -- -D warnings
+
+      - name: Unit tests (fips)
+        run: |
+          cargo test --manifest-path operator/Cargo.toml --no-default-features --features fips
+          cargo test --manifest-path overlay-sync/Cargo.toml --no-default-features --features fips
+
+      # fips must exclude rustls: TLS routes through system OpenSSL. ring stays
+      # present (rcgen cert setup, swim gossip), outside the TLS boundary, so it
+      # is not asserted here.
+      - name: Assert fips build excludes rustls
+        run: |
+          for m in operator/Cargo.toml overlay-sync/Cargo.toml; do
+            if cargo tree --manifest-path "$m" --no-default-features --features fips -e normal -i rustls >/dev/null 2>&1; then
+              echo "fips build of $m unexpectedly links rustls"
+              exit 1
+            fi
+          done
+          echo "no rustls in fips builds"

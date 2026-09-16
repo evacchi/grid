@@ -14,6 +14,14 @@
     reason = "overlay-sync uses short closure params and index arithmetic pervasively"
 )]
 
+#[cfg(all(feature = "tls-rustls", feature = "fips"))]
+compile_error!(
+    "features `tls-rustls` and `fips` are mutually exclusive; build a FIPS binary with --no-default-features --features fips"
+);
+
+#[cfg(not(any(feature = "tls-rustls", feature = "fips")))]
+compile_error!("one of `tls-rustls` or `fips` must be enabled");
+
 mod atomic_file;
 mod metrics;
 mod status;

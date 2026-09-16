@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::ByteString;
-use sha2::{Digest as _, Sha256};
 
 /// Maximum public certificate PEM size accepted for SWIM distribution,
 /// `GridSite` status, or trust-bundle storage.
@@ -79,7 +78,7 @@ pub fn sha256_fingerprint(pem_str: &str) -> String {
     // Trim surrounding whitespace so fingerprints are consistent regardless of
     // trailing newlines from different PEM serialization paths (kubectl jsonpath
     // vs Kubernetes API deserialization).
-    let digest = Sha256::digest(pem_str.trim().as_bytes());
+    let digest = super::tls_backend::sha256(pem_str.trim().as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
 }
 
