@@ -157,7 +157,9 @@ pub struct GridSiteStatus {
     #[serde(default)]
     pub capabilities: SiteCapabilities,
 
-    /// Timestamp of the last data-plane gateway health evaluation.
+    /// Timestamp of the last probe that changed an observable status field.
+    ///
+    /// Advances only on a status write, so a stuck-operator check must use phase.
     pub last_probe_time: Option<String>,
 
     /// Timestamp of the last phase transition.

@@ -565,9 +565,19 @@ fn truncate_event_note(message: &str) -> String {
     }
 }
 
-/// Return whether the status subresource differs from the desired status.
+/// Whether the controller-owned status fields differ.
+///
+/// `last_probe_time` and `last_transition_time` are rewritten every probed
+/// reconcile, so comparing them would re-patch each pass into a hot loop.
+/// `capabilities` and `public_cert_pem` are SWIM-owned and not patched here.
 fn grid_site_status_needs_update(current: Option<&GridSiteStatus>, desired: &GridSiteStatus) -> bool {
-    current != Some(desired)
+    let Some(current) = current else {
+        return true;
+    };
+    current.phase != desired.phase
+        || current.reason != desired.reason
+        || current.message != desired.message
+        || current.observed_generation != desired.observed_generation
 }
 
 /// Build a merge patch containing only fields owned by the `GridSite`
@@ -622,6 +632,29 @@ mod tests {
         };
         assert!(grid_site_status_needs_update(Some(&baseline), &changed));
         assert!(grid_site_status_needs_update(None, &baseline));
+    }
+
+    #[test]
+    fn grid_site_status_update_is_skipped_when_only_the_probe_timestamp_changed() {
+        let baseline = GridSiteStatus {
+            phase: GridSitePhase::Active,
+            observed_generation: 2,
+            reason: "Ready".to_owned(),
+            message: "gateway reachable".to_owned(),
+            last_probe_time: Some("2026-01-01T00:00:00Z".to_owned()),
+            last_transition_time: Some("2026-01-01T00:00:00Z".to_owned()),
+            ..GridSiteStatus::default()
+        };
+        // A probe that changed nothing still rewrites the timestamps, which the guard must ignore.
+        let probed_again = GridSiteStatus {
+            last_probe_time: Some("2026-01-01T00:00:30Z".to_owned()),
+            last_transition_time: Some("2026-01-01T00:00:30Z".to_owned()),
+            ..baseline.clone()
+        };
+        assert!(
+            !grid_site_status_needs_update(Some(&baseline), &probed_again),
+            "a timestamp-only change must not trigger a status write"
+        );
     }
 
     #[test]
