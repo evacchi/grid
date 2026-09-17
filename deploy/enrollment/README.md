@@ -52,7 +52,7 @@ TLS: set `sslmode=verify-full` with a CA bundle, or at least `sslmode=require`.
 startup. When the variable is unset the records are kept in memory and lost on
 restart, which suits a local trial and nothing else.
 
-Listen address. `ENROLLMENT_LISTEN_ADDR` defaults to `0.0.0.0:8080`, HTTPS. On a
+Listen address. `ENROLLMENT_LISTEN_ADDR` defaults to `0.0.0.0:8443`, HTTPS. On a
 stop signal, SIGINT or SIGTERM, the service drains in-flight requests before it
 exits, so a rolling deploy does not cut off an enrollment mid-issue.
 

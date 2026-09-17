@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Multi-stage build for mock AI provider servers.
 # Produces a single binary that serves any provider via --provider flag.
 #
@@ -5,38 +7,40 @@
 #   docker build -t grid-mock-providers:latest -f mock-providers/Containerfile .
 #   docker run --rm -p 10001:8080 grid-mock-providers:latest --provider openai
 
-FROM rust:1.96-alpine AS builder
-RUN apk add --no-cache musl-dev
-WORKDIR /build
-COPY Cargo.toml Cargo.lock clippy.toml rustfmt.toml deny.toml ./
-COPY .cargo .cargo
-# Copy Cargo.toml for every workspace member so cargo can resolve the workspace.
-# Only mock-providers and xtask need full source; the others are manifest-only stubs.
-COPY certs/Cargo.toml certs/Cargo.toml
-COPY crdt/Cargo.toml crdt/Cargo.toml
-COPY enrollment/Cargo.toml enrollment/Cargo.toml
-COPY forge/Cargo.toml forge/Cargo.toml
-COPY operator/Cargo.toml operator/Cargo.toml
-COPY overlay-sync/Cargo.toml overlay-sync/Cargo.toml
-COPY scoring/Cargo.toml scoring/Cargo.toml
-COPY swim/Cargo.toml swim/Cargo.toml
-# Create stub source files so cargo can validate each workspace member manifest
-# without compiling them. Only mock-providers is actually built.
-RUN mkdir -p certs/src crdt/src forge/src operator/src overlay-sync/src \
-             scoring/src swim/src && \
-    touch certs/src/lib.rs crdt/src/lib.rs forge/src/lib.rs operator/src/lib.rs \
-          scoring/src/lib.rs swim/src/lib.rs && \
-    printf 'fn main() {}\n' > overlay-sync/src/main.rs
-COPY mock-providers mock-providers
-COPY xtask xtask
-RUN cargo build --release --package mock-providers
+# ------------------------------------------------------------------------------
+# Stage 1: Build
+# ------------------------------------------------------------------------------
 
-FROM alpine:3.22
+FROM rust:1.96-alpine AS builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --package mock-providers \
+    && cp target/release/mock-providers /usr/local/bin/mock-providers
+
+# ------------------------------------------------------------------------------
+# Stage 2: Runtime
+# ------------------------------------------------------------------------------
+
+FROM alpine:3.23
+
 LABEL org.opencontainers.image.source="https://github.com/praxis-proxy/grid" \
     org.opencontainers.image.description="Mock inference providers for Grid executable demos" \
-    org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.licenses="Apache-2.0"
+
 RUN adduser -D -u 1000 app
-COPY --from=builder /build/target/release/mock-providers /usr/local/bin/
+
+COPY --from=builder --chown=root:root --chmod=0555 \
+    /usr/local/bin/mock-providers /usr/local/bin/mock-providers
+
 USER 1000:1000
+
 EXPOSE 8080
+
 ENTRYPOINT ["mock-providers"]

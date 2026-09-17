@@ -12,31 +12,7 @@ RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf cmake ma
 
 WORKDIR /src
 
-# ------------------------------------------------------------------------------
-# Cache Build
-# ------------------------------------------------------------------------------
-
-COPY Cargo.toml Cargo.lock ./
-COPY overlay-sync/Cargo.toml overlay-sync/Cargo.toml
-
-# Strip workspace members not needed for this binary.
-RUN sed -i '/certs/d; /crdt/d; /enrollment/d; /forge/d; /mock-providers/d; /operator/d; /scoring/d; /swim/d; /xtask/d' Cargo.toml
-
-RUN mkdir -p overlay-sync/src \
-    && printf '//! stub\nfn main() {}\n' > overlay-sync/src/main.rs
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release -p grid-overlay-sync --bin grid-overlay-sync
-
-# ------------------------------------------------------------------------------
-# Build
-# ------------------------------------------------------------------------------
-
-COPY overlay-sync/src overlay-sync/src
-COPY tests/fixtures tests/fixtures
-
-RUN find overlay-sync/src -name '*.rs' -exec touch {} +
+COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
@@ -51,7 +27,7 @@ FROM alpine:3.23
 
 LABEL org.opencontainers.image.source="https://github.com/praxis-proxy/grid" \
     org.opencontainers.image.description="Grid overlay sync sidecar" \
-    org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S grid \

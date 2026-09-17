@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ca_cert_path = std::env::var(CA_CERT_PATH)?;
     let ca_key_path = std::env::var(CA_KEY_PATH)?;
     let common_name = std::env::var(CA_COMMON_NAME).unwrap_or_else(|_unset| "grid-ca".to_owned());
-    let listen = std::env::var(LISTEN_ADDR).unwrap_or_else(|_unset| "0.0.0.0:8080".to_owned());
+    let listen = std::env::var(LISTEN_ADDR).unwrap_or_else(|_unset| "0.0.0.0:8443".to_owned());
 
     let ca = certs::load_ca(
         &common_name,

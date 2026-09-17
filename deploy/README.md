@@ -104,8 +104,9 @@ For production, use a versioned release tag or immutable digest.
 
 Grid operator image builds use a multi-stage Containerfile:
 
-- **Build stage**: `rust:1.96-alpine` compiles the operator with dependency
-  caching from workspace manifests and stub sources.
+- **Build stage**: `rust:1.96-alpine` copies the whole workspace (`COPY . .`)
+  and runs one `cargo build` for the operator, with BuildKit cache mounts on the
+  Cargo registry and the target directory keeping incremental compiles fast.
 - **Runtime stage**: `alpine:3.23` contains only CA certificates, a non-root
   `grid` user, and the operator binary.
 - **Security**: multi-stage build, no build toolchain in the runtime image,

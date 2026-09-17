@@ -3,9 +3,6 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Build
 # ------------------------------------------------------------------------------
-#
-# Copy workspace manifests first, build with stub sources to cache dependency
-# compilation, then copy real source and rebuild only project crates.
 
 FROM rust:1.96-alpine AS builder
 
@@ -15,45 +12,7 @@ RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf cmake ma
 
 WORKDIR /src
 
-# ------------------------------------------------------------------------------
-# Cache Build
-# ------------------------------------------------------------------------------
-
-COPY Cargo.toml Cargo.lock ./
-COPY certs/Cargo.toml certs/Cargo.toml
-COPY crdt/Cargo.toml crdt/Cargo.toml
-COPY operator/Cargo.toml operator/Cargo.toml
-COPY scoring/Cargo.toml scoring/Cargo.toml
-COPY swim/Cargo.toml swim/Cargo.toml
-
-# Strip workspace members not needed for the operator binary so this image build
-# does not need their manifests or source.
-RUN sed -i '/enrollment/d; /forge/d; /mock-providers/d; /overlay-sync/d; /xtask/d' Cargo.toml
-
-RUN mkdir -p certs/src crdt/src operator/src scoring/src swim/src \
-    && echo '//! stub' > certs/src/lib.rs \
-    && echo '//! stub' > crdt/src/lib.rs \
-    && echo '//! stub' > operator/src/lib.rs \
-    && echo '//! stub' > scoring/src/lib.rs \
-    && echo '//! stub' > swim/src/lib.rs \
-    && printf '//! stub\nfn main() {}\n' > operator/src/main.rs
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release -p operator --bin operator
-
-# ------------------------------------------------------------------------------
-# Build
-# ------------------------------------------------------------------------------
-
-COPY certs/src certs/src
-COPY crdt/src crdt/src
-COPY operator/src operator/src
-COPY scoring/src scoring/src
-COPY swim/src swim/src
-
-RUN find certs/src crdt/src operator/src scoring/src swim/src \
-    -name '*.rs' -exec touch {} +
+COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
@@ -68,7 +27,7 @@ FROM alpine:3.23
 
 LABEL org.opencontainers.image.source="https://github.com/praxis-proxy/grid" \
     org.opencontainers.image.description="Grid operator for multi-site AI routing" \
-    org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S grid \
@@ -79,6 +38,10 @@ COPY --from=builder --chown=root:root --chmod=0555 \
 
 USER 100:101
 
+# Metrics are always served on 9090/tcp. The cross-site signals endpoint on
+# 9091/tcp is optional (served only in serve mode); SWIM gossip is UDP and only
+# bound when GRID_SWIM_BIND_ADDR is set.
+EXPOSE 9090/tcp
 EXPOSE 7946/udp
 
 ENTRYPOINT ["operator"]

@@ -81,7 +81,7 @@ For regenerating CRDs after schema changes:
 ```
 
 **Container image pattern**: The operator Containerfile uses a
-`rust:1.96-alpine` builder, dependency-cache stubs, and an `alpine:3.23`
+`rust:1.96-alpine` builder with BuildKit cache mounts, and an `alpine:3.23`
 runtime with a non-root user and no build toolchain.  The Kubernetes Deployment
 adds a restricted security context for OpenShift-style clusters.
 

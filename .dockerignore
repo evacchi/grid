@@ -3,3 +3,12 @@
 target
 **/target
 evidence
+
+# Keep secrets and local credentials out of the build context now that the
+# builds copy the whole tree.
+*.pem
+*.key
+*.crt
+*.env
+.cargo/credentials.toml
+.claude
