@@ -83,8 +83,7 @@ pub fn verify_site_cert(ca_cert_pem: &str, leaf_pem: &str, claimed_site: &str) -
     if leaf.issuer() != ca.subject() {
         return Err(VerifyError::WrongIssuer);
     }
-    leaf.verify_signature(Some(ca.public_key()))
-        .map_err(|_bad| VerifyError::BadSignature)?;
+    crate::backend::verify_leaf_signature(ca_cert_pem, leaf_pem).map_err(|_bad| VerifyError::BadSignature)?;
     if !leaf.validity().is_valid() {
         return Err(VerifyError::NotCurrentlyValid);
     }
@@ -112,24 +111,23 @@ pub fn verify_site_cert(ca_cert_pem: &str, leaf_pem: &str, claimed_site: &str) -
 ///
 /// Returns [`VerifyError`] if the certificate is oversized or unparseable.
 pub fn canonical_fingerprint(cert_pem: &str) -> Result<String, VerifyError> {
-    use sha2::{Digest as _, Sha256};
-
     if cert_pem.len() > MAX_CERT_PEM_BYTES {
         return Err(VerifyError::TooLarge);
     }
     let der = pem::parse(cert_pem).map_err(|_bad| VerifyError::Malformed)?;
 
-    Ok(Sha256::digest(der.contents())
+    Ok(crate::backend::sha256(der.contents())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
 }
 
-/// The public key a certificate request carries, as a key point.
+/// The public key a certificate request carries, as `SubjectPublicKeyInfo` DER.
 ///
 /// An enrollee proves it is the one that made a request by signing with the key
-/// half it kept. This returns the half the request published, so a caller can
-/// check that signature.
+/// half it kept. This returns the half the request published, in the same
+/// `SubjectPublicKeyInfo` form the backends fingerprint, so a caller can check
+/// that signature or match the key against an issued certificate.
 ///
 /// # Errors
 ///
@@ -144,12 +142,7 @@ pub fn csr_public_key(csr_pem: &str) -> Result<Vec<u8>, VerifyError> {
     let der = pem::parse(csr_pem).map_err(|_bad| VerifyError::Malformed)?;
     let (_rest, csr) = X509CertificationRequest::from_der(der.contents()).map_err(|_bad| VerifyError::Malformed)?;
 
-    Ok(csr
-        .certification_request_info
-        .subject_pki
-        .subject_public_key
-        .data
-        .to_vec())
+    Ok(csr.certification_request_info.subject_pki.raw.to_vec())
 }
 
 /// The one SPIFFE URI name on a certificate, when there is exactly one.

@@ -321,10 +321,13 @@ dependencies = [
  "http-body",
  "hyper",
  "hyper-util",
+ "openssl",
+ "openssl-sys",
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
  "tokio",
+ "tokio-openssl",
  "tokio-rustls",
  "tower-service",
 ]
@@ -436,6 +439,7 @@ dependencies = [
 name = "certs"
 version = "0.1.4"
 dependencies = [
+ "openssl",
  "pem 4.0.0",
  "rcgen",
  "sha2 0.10.9",
@@ -884,12 +888,12 @@ dependencies = [
  "http-body-util",
  "k8s-openapi",
  "kube",
+ "openssl",
  "rcgen",
  "ring",
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.20",
  "time",
@@ -3323,6 +3327,7 @@ dependencies = [
  "indexmap",
  "log",
  "memchr",
+ "native-tls",
  "percent-encoding",
  "rustls",
  "serde",
