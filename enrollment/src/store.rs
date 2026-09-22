@@ -112,7 +112,7 @@ impl Store {
     /// Returns [`StoreError::Backend`] if the database is unreachable or the
     /// schema cannot be applied.
     pub async fn postgres(url: &str) -> Result<Self, StoreError> {
-        Ok(Self::Postgres(PgStore::connect(url).await?))
+        Ok(Self::Postgres(Box::pin(PgStore::connect(url)).await?))
     }
 
     /// Mint a site token, returning its identifier.

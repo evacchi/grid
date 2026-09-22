@@ -32,12 +32,12 @@ impl PgStore {
     /// Returns [`StoreError::Backend`] if the database is unreachable or the
     /// schema cannot be applied.
     pub async fn connect(url: &str) -> Result<Self, StoreError> {
-        let pool = PgPool::connect(url).await.map_err(backend)?;
+        let pool = Box::pin(PgPool::connect(url)).await.map_err(backend)?;
         // Serialize schema application across instances that start at once. Two
         // connections running the DDL concurrently race on a table's implicit
         // type, which no IF NOT EXISTS prevents. An advisory lock, released when
         // the transaction commits, makes the guarded creates effective.
-        let mut tx = pool.begin().await.map_err(backend)?;
+        let mut tx = Box::pin(pool.begin()).await.map_err(backend)?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(SCHEMA_LOCK_KEY)
             .execute(&mut *tx)
@@ -117,7 +117,7 @@ impl PgStore {
         F: FnOnce(&Pin) -> Result<Issued, StoreError> + Send,
     {
         let enrollment_id = Uuid::new_v4();
-        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let mut tx = Box::pin(self.pool.begin()).await.map_err(backend)?;
 
         let consumed = sqlx::query(
             "UPDATE site_tokens

@@ -384,19 +384,17 @@ async fn enroll(
 
     let csr = input.csr;
     let validity = Validity::starting_now(state.cert_lifetime);
-    let (enrollment_id, issued) = state
-        .store
-        .redeem_and_issue(&token_sha256, |pin: &Pin| {
-            // Signed under the pinned name, with every SAN rebuilt from it.
-            sign_csr(&state.ca, &pin.site_name, &csr, validity)
-                .map(|cert| Issued {
-                    certificate: cert.cert_pem,
-                    spiffe_id: cert.spiffe_id,
-                    public_key_sha256: cert.public_key_sha256,
-                })
-                .map_err(|err| StoreError::Backend(format!("signing failed: {err}")))
-        })
-        .await?;
+    let (enrollment_id, issued) = Box::pin(state.store.redeem_and_issue(&token_sha256, |pin: &Pin| {
+        // Signed under the pinned name, with every SAN rebuilt from it.
+        sign_csr(&state.ca, &pin.site_name, &csr, validity)
+            .map(|cert| Issued {
+                certificate: cert.cert_pem,
+                spiffe_id: cert.spiffe_id,
+                public_key_sha256: cert.public_key_sha256,
+            })
+            .map_err(|err| StoreError::Backend(format!("signing failed: {err}")))
+    }))
+    .await?;
 
     tracing::info!(%enrollment_id, spiffe_id = %issued.spiffe_id, "site enrolled");
     Ok((
