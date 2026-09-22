@@ -12,7 +12,8 @@
 //!     not reproduce. Keeping the wire field a `String` preserves the rfc3339 contract, and the handler parses it to
 //!     `time::OffsetDateTime`.
 
-use schemars::schema::Schema;
+use schemars::Schema;
+use schemars08::schema::Schema as TypifySchema;
 use typify::{TypeSpace, TypeSpaceSettings};
 
 /// Spec read, relative to the workspace root.
@@ -36,12 +37,14 @@ pub(crate) fn generate() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("spec has no components.schemas")?;
 
-    let mut defs: Vec<(String, Schema)> = Vec::with_capacity(schemas.len());
+    let mut defs: Vec<(String, TypifySchema)> = Vec::with_capacity(schemas.len());
     for (name, raw) in schemas.iter() {
         let mut value = raw.clone();
         normalize(&mut value);
         let schema: Schema = serde_json::from_value(value)?;
-        defs.push((name.clone(), schema));
+        // Typify 0.8 still consumes schemars 0.8 schemas; keep that boundary explicit while parsing with schemars 1.x.
+        let typify_schema = serde_json::from_value(serde_json::to_value(schema)?)?;
+        defs.push((name.clone(), typify_schema));
     }
     defs.sort_by(|a, b| a.0.cmp(&b.0));
 
