@@ -477,6 +477,109 @@ spec:
                         - caSecretRef
                       type: object
                   type: object
+                modelDiscovery:
+                  description: Optional polling of models served by this provider's backend.
+                  nullable: true
+                  properties:
+                    endpoint:
+                      description: Base URL for discovery. Defaults to `spec.endpoint` when absent.
+                      minLength: 1
+                      nullable: true
+                      type: string
+                    intervalSeconds:
+                      description: Positive poll interval in seconds. Defaults to 60 when omitted.
+                      format: uint32
+                      minimum: 1.0
+                      nullable: true
+                      type: integer
+                    source:
+                      description: Discovery source. The first supported source is `openAiModels`.
+                      enum:
+                        - openAiModels
+                      type: string
+                    timeoutSeconds:
+                      description: Positive request timeout in seconds, chosen by the provider administrator.
+                      format: uint32
+                      minimum: 1.0
+                      type: integer
+                    tls:
+                      description: Optional CA and client certificate material for the discovery endpoint.
+                      nullable: true
+                      properties:
+                        caSecretRef:
+                          description: |-
+                            Reference to a Secret containing the CA certificate PEM for server
+                            verification.
+
+                            The Secret must contain the PEM-encoded CA certificate under the key
+                            `ca.crt` (or the key specified by `key`).  When this CA is
+                            set, the scraper trusts **only** this CA — system root certificates
+                            are not consulted.
+                          properties:
+                            key:
+                              description: |-
+                                Key within the Secret's `data` map.
+
+                                Required when the Secret holds multiple keys (e.g. credential references
+                                in `InferenceProvider.spec.auth.secretRef`).  Omit only when the entire
+                                Secret is consumed (e.g. TLS `ca_secret_ref`).
+                              minLength: 1
+                              nullable: true
+                              type: string
+                            name:
+                              description: Secret name.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Secret namespace.
+                              minLength: 1
+                              type: string
+                          required:
+                            - name
+                            - namespace
+                          type: object
+                        clientCertificateSecretRef:
+                          description: |-
+                            Reference to a Secret containing the client certificate and private
+                            key for mutual TLS.
+
+                            When set, the scraper presents this identity during the TLS handshake.
+                            The Secret must contain `tls.crt` (or `certificate_key`) and
+                            `tls.key` (or `private_key_key`) in PEM format.
+
+                            When absent, the scraper performs one-way TLS only (server verification
+                            with the CA from `ca_secret_ref`, no client certificate).
+                          nullable: true
+                          properties:
+                            certificateKey:
+                              default: tls.crt
+                              description: Key within `Secret.data` holding the PEM-encoded client certificate.
+                              minLength: 1
+                              type: string
+                            name:
+                              description: Secret name.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Secret namespace.
+                              minLength: 1
+                              type: string
+                            privateKeyKey:
+                              default: tls.key
+                              description: Key within `Secret.data` holding the PEM-encoded private key.
+                              minLength: 1
+                              type: string
+                          required:
+                            - name
+                            - namespace
+                          type: object
+                      required:
+                        - caSecretRef
+                      type: object
+                  required:
+                    - source
+                    - timeoutSeconds
+                  type: object
                 models:
                   default: []
                   description: Models served by this provider.
@@ -560,6 +663,34 @@ spec:
                   items:
                     type: string
                   type: array
+                modelDiscovery:
+                  description: Last model-discovery observation, when discovery is configured.
+                  nullable: true
+                  properties:
+                    lastAttemptTime:
+                      description: RFC 3339 time of the most recent poll, successful or failed.
+                      nullable: true
+                      type: string
+                    lastFailureReason:
+                      description: Machine-readable failure reason for the latest poll, if any.
+                      nullable: true
+                      type: string
+                    lastSuccessfulTime:
+                      description: RFC 3339 time of the last successful poll; absent before first success.
+                      nullable: true
+                      type: string
+                    models:
+                      default: []
+                      description: Models returned by the last successful poll, in sorted order.
+                      items:
+                        type: string
+                      type: array
+                    observedGeneration:
+                      default: 0
+                      description: Provider generation from which this observation was obtained.
+                      format: int64
+                      type: integer
+                  type: object
                 observedGeneration:
                   default: 0
                   description: Last observed generation.

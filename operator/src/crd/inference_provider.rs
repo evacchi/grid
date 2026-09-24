@@ -5,6 +5,8 @@
 //! cloud-managed services (Bedrock, Vertex), and third-party
 //! APIs (OpenAI, Anthropic).
 
+use std::num::NonZeroU32;
+
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,13 @@ use super::{
 // ---------------------------------------------------------------------------
 // Spec
 // ---------------------------------------------------------------------------
+
+/// Default model-discovery poll interval in seconds.
+///
+/// Starts at the existing 60-second TLS requeue cadence so discovery does not
+/// add a faster default reconcile for providers already using endpoint TLS.
+/// Providers can set `modelDiscovery.intervalSeconds` explicitly.
+pub const DEFAULT_MODEL_DISCOVERY_INTERVAL_SECONDS: u32 = 60;
 
 /// Specification for an [`InferenceProvider`].
 #[derive(Clone, CustomResource, Debug, Deserialize, JsonSchema, Serialize)]
@@ -73,6 +82,10 @@ pub struct InferenceProviderSpec {
     /// Models served by this provider.
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+
+    /// Optional polling of models served by this provider's backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_discovery: Option<ModelDiscoveryConfig>,
 
     /// Inference provider type.
     pub provider_kind: String,
@@ -429,6 +442,47 @@ pub struct HealthCheckConfig {
     pub tls: Option<EndpointTlsConfig>,
 }
 
+/// Configuration for polling a provider's served-model inventory.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDiscoveryConfig {
+    /// Discovery source. The first supported source is `openAiModels`.
+    pub source: ModelDiscoverySource,
+
+    /// Base URL for discovery. Defaults to `spec.endpoint` when absent.
+    #[schemars(length(min = 1))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+
+    /// Positive poll interval in seconds. Defaults to 60 when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_seconds: Option<NonZeroU32>,
+
+    /// Positive request timeout in seconds, chosen by the provider administrator.
+    pub timeout_seconds: NonZeroU32,
+
+    /// Optional CA and client certificate material for the discovery endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<EndpointTlsConfig>,
+}
+
+impl ModelDiscoveryConfig {
+    /// Return the configured interval or the default.
+    #[must_use]
+    pub fn effective_interval_seconds(&self) -> u32 {
+        self.interval_seconds
+            .map_or(DEFAULT_MODEL_DISCOVERY_INTERVAL_SECONDS, NonZeroU32::get)
+    }
+}
+
+/// Backend model-discovery source kind.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelDiscoverySource {
+    /// OpenAI-compatible `GET /v1/models` endpoint.
+    OpenAiModels,
+}
+
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
@@ -463,6 +517,35 @@ pub struct InferenceProviderStatus {
     ///   `HealthCheckTlsIdentityMismatch`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+
+    /// Last model-discovery observation, when discovery is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_discovery: Option<ModelDiscoveryStatus>,
+}
+
+/// Last successful model poll and the outcome of the most recent attempt.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDiscoveryStatus {
+    /// Models returned by the last successful poll, in sorted order.
+    #[serde(default)]
+    pub models: Vec<String>,
+
+    /// RFC 3339 time of the last successful poll; absent before first success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_time: Option<String>,
+
+    /// RFC 3339 time of the most recent poll, successful or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_time: Option<String>,
+
+    /// Provider generation from which this observation was obtained.
+    #[serde(default)]
+    pub observed_generation: i64,
+
+    /// Machine-readable failure reason for the latest poll, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_reason: Option<String>,
 }
 
 /// Lifecycle phase of a provider resource.
@@ -514,6 +597,34 @@ mod tests {
         let spec: InferenceProviderSpec = serde_json::from_value(json).unwrap_or_else(|_| std::process::abort());
         assert_eq!(spec.provider_kind, "anthropic", "provider kind");
         assert_eq!(spec.models.len(), 1, "model count");
+    }
+
+    #[test]
+    fn model_discovery_defaults_interval_and_rejects_zero() {
+        let base = serde_json::json!({
+            "source": "openAiModels",
+            "intervalSeconds": 60,
+            "timeoutSeconds": 5
+        });
+        let config: ModelDiscoveryConfig =
+            serde_json::from_value(base.clone()).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(config.effective_interval_seconds(), 60);
+        assert_eq!(config.timeout_seconds.get(), 5);
+
+        let mut missing = base.clone();
+        missing
+            .as_object_mut()
+            .unwrap_or_else(|| std::process::abort())
+            .remove("intervalSeconds");
+        let defaulted: ModelDiscoveryConfig = serde_json::from_value(missing).unwrap_or_else(|_| std::process::abort());
+        assert!(defaulted.interval_seconds.is_none());
+        assert_eq!(defaulted.effective_interval_seconds(), 60);
+
+        let mut zero = base;
+        zero.as_object_mut()
+            .unwrap_or_else(|| std::process::abort())
+            .insert("intervalSeconds".to_owned(), serde_json::json!(0));
+        assert!(serde_json::from_value::<ModelDiscoveryConfig>(zero).err().is_some());
     }
 
     #[test]

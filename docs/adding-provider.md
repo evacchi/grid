@@ -136,7 +136,28 @@ inferenceProviders:
 
 Required fields: `name`, `gridNetworkRef`, `providerKind`,
 `backendKind`, `endpoint`. Optional: `models`, `auth`, `healthCheck`,
-`metricsConfig`, `cost`, `accessPolicy`.
+`metricsConfig`, `cost`, `accessPolicy`, `modelDiscovery`.
+
+To observe the backend's OpenAI-compatible model list, opt in per provider:
+
+```yaml
+modelDiscovery:
+  source: openAiModels
+  # endpoint: http://model-api.grid-system.svc.cluster.local:8080
+  # intervalSeconds: 60  # optional; defaults to 60s
+  timeoutSeconds: 5
+```
+
+`timeoutSeconds` is required and positive. `intervalSeconds` is optional and
+defaults to 60 seconds.
+The operator polls `{endpoint}/v1/models`, using `spec.endpoint` when the
+discovery endpoint is omitted. It uses `spec.auth` bearer-token credentials
+when configured; `modelDiscovery.tls` can supply a CA and client identity for
+HTTPS. Check `status.modelDiscovery.models`, `lastSuccessfulTime`, and
+`lastFailureReason` to inspect the result. A failed poll retains the last
+successful observation without advancing its timestamp; a successful empty
+list clears it. This initial observation does not replace `spec.models` in
+routing or gossip yet.
 
 ### 4. Update provider Praxis config template
 

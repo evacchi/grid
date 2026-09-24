@@ -53,6 +53,7 @@ use std::{
 use axum::response::IntoResponse as _;
 use clap::Parser as _;
 use futures::StreamExt as _;
+use inference_provider::ModelDiscoveryPoller;
 use k8s_openapi::api::core::v1::ConfigMap;
 use kube::{
     Api, Client,
@@ -134,16 +135,10 @@ async fn main() {
     let swim_for_poller = swim.clone();
     let ctx = Arc::new(OperatorCtx::new(client.clone(), swim, signal_mode));
 
-    // A round of peer polls can be in flight when the pod is told to terminate;
-    // the trigger lets it stand down cleanly rather than being dropped mid-await.
-    // Only installed with the feature, so the default path keeps today's signal
-    // disposition unchanged.
+    // Peer and model-source rounds can be in flight during termination. The
+    // trigger lets both pollers stand down cleanly.
     let (trigger, shutdown) = operator::shutdown::Trigger::new();
-    if signals_enabled {
-        tokio::spawn(watch_for_termination(trigger));
-    } else {
-        drop(trigger);
-    }
+    tokio::spawn(watch_for_termination(trigger));
 
     let result = tokio::try_join!(
         run_network_controller(client.clone(), Arc::clone(&ctx)),
@@ -167,6 +162,7 @@ async fn main() {
             client.clone(),
             shutdown.clone(),
         ),
+        run_model_discovery_poller(client.clone(), shutdown.clone()),
         run_local_scraper(signals_enabled, Arc::clone(&ctx), client.clone()),
     );
 
@@ -1137,6 +1133,14 @@ async fn run_peer_poller(
     .run()
     .await;
     Ok(())
+}
+
+/// Start the provider model-source poller and stop it on shutdown.
+async fn run_model_discovery_poller(
+    client: Client,
+    shutdown: operator::shutdown::Shutdown,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ModelDiscoveryPoller::new(client, shutdown).run().await
 }
 
 /// The invariant state one peer-polling session threads through every round.

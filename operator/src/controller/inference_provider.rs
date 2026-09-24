@@ -53,15 +53,20 @@
 //! [`GridNetwork`]: crate::crd::grid_network::GridNetwork
 //! [`GridSite`]: crate::crd::grid_site::GridSite
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
+use futures::StreamExt as _;
 use http_body_util::Empty;
 use hyper_util::{client::legacy::Client as HyperClient, rt::TokioExecutor};
 use kube::{
     Client,
     api::{Api, ListParams, Patch, PatchParams},
-    runtime::controller::Action,
+    runtime::{controller::Action, watcher},
 };
 use tracing::info;
 
@@ -70,11 +75,12 @@ use crate::{
         grid_network::GridNetwork,
         grid_site::GridSite,
         inference_provider::{
-            HealthCheckConfig, InferenceProvider, InferenceProviderSpec, InferenceProviderStatus, ProviderPhase,
+            HealthCheckConfig, InferenceProvider, InferenceProviderSpec, InferenceProviderStatus, ModelDiscoverySource,
+            ModelDiscoveryStatus, ProviderPhase,
         },
     },
     error::OperatorError,
-    resources::{credentials, provider_metrics},
+    resources::{credentials, model_discovery, provider_metrics},
 };
 
 // ---------------------------------------------------------------------------
@@ -93,9 +99,6 @@ const REQUEUE_INTERVAL: Duration = Duration::from_secs(300);
 /// API server load.  When `healthCheck.interval` is also set, the effective
 /// interval is `min(healthCheck.interval, TLS_REQUEUE_INTERVAL)`.
 const TLS_REQUEUE_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Field manager name for server-side apply.
-const FIELD_MANAGER: &str = "grid-operator";
 
 /// Default probe timeout when `spec.healthCheck.timeout` is absent.
 const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -123,7 +126,7 @@ pub async fn reconcile(provider: Arc<InferenceProvider>, client: Arc<Client>) ->
 
     info!(name, "reconciling InferenceProvider");
 
-    let (phase, matching_sites, reason) = resolve_phase_and_sites(&provider, &client).await?;
+    let (phase, matching_sites, reason) = Box::pin(resolve_phase_and_sites(&provider, &client)).await?;
     let generation = provider.metadata.generation.unwrap_or(0);
     update_status(&provider, &client, phase, matching_sites, generation, reason).await?;
 
@@ -371,6 +374,262 @@ pub(crate) fn requeue_interval_for_provider(spec: &InferenceProviderSpec) -> Dur
         (Some(interval), false) => interval,
         (None, true) => TLS_REQUEUE_INTERVAL,
         (None, false) => REQUEUE_INTERVAL,
+    }
+}
+
+/// A periodic, bounded poller for discovery-enabled providers.
+pub struct ModelDiscoveryPoller {
+    /// Kubernetes client for source watches, credentials, and status writes.
+    client: Client,
+    /// Signal used to cancel an in-flight round.
+    shutdown: crate::shutdown::Shutdown,
+    /// Complete provider snapshot from the Kubernetes watch.
+    providers: BTreeMap<String, InferenceProvider>,
+    /// Replacement snapshot being built during watch initialization.
+    initializing: Option<BTreeMap<String, InferenceProvider>>,
+    /// Local attempt times cover status watch lag between rounds.
+    last_started: BTreeMap<String, (i64, Instant)>,
+    /// Maximum number of providers polled concurrently.
+    concurrency: usize,
+}
+
+impl ModelDiscoveryPoller {
+    /// Build a poller with the same bounded fan-out as the peer poller.
+    #[must_use]
+    pub fn new(client: Client, shutdown: crate::shutdown::Shutdown) -> Self {
+        Self {
+            client,
+            shutdown,
+            providers: BTreeMap::new(),
+            initializing: None,
+            last_started: BTreeMap::new(),
+            concurrency: 8,
+        }
+    }
+
+    /// Watch providers and poll due sources until shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Watch and status errors are logged and retried. An unexpectedly closed
+    /// provider watch returns an error; shutdown returns successfully.
+    pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let api: Api<InferenceProvider> = Api::all(self.client.clone());
+        let mut watch = watcher(api, watcher::Config::default()).boxed();
+        loop {
+            tokio::select! {
+                biased;
+                () = self.shutdown.triggered() => return Ok(()),
+                event = watch.next() => match event {
+                    Some(Ok(event)) => self.apply_watch_event(event),
+                    Some(Err(error)) => tracing::warn!(%error, "model discovery: provider watch failed"),
+                    None => return Err("model discovery provider watch closed".into()),
+                },
+                _ = ticker.tick() => {
+                    let shutdown = self.shutdown.clone();
+                    tokio::select! {
+                        biased;
+                        () = shutdown.triggered() => return Ok(()),
+                        () = self.poll_once() => {},
+                    }
+                },
+            }
+        }
+    }
+
+    /// Poll each due source once, with bounded concurrency.
+    async fn poll_once(&mut self) {
+        let polls = self.take_due().into_iter().map(|provider| {
+            let poller = &*self;
+            async move { poller.poll_and_record_models(&provider).await }
+        });
+        futures::stream::iter(polls)
+            .buffer_unordered(self.concurrency.max(1))
+            .collect::<Vec<_>>()
+            .await;
+    }
+
+    /// Take a snapshot of due sources and remember each attempt before polling.
+    fn take_due(&mut self) -> Vec<InferenceProvider> {
+        if self.initializing.is_some() {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        let due: Vec<InferenceProvider> = self
+            .providers
+            .values()
+            .filter(|provider| self.poll_due(provider))
+            .cloned()
+            .collect();
+        for provider in &due {
+            if let Some(name) = provider.metadata.name.as_ref() {
+                self.last_started
+                    .insert(name.clone(), (provider.metadata.generation.unwrap_or(0), now));
+            }
+        }
+        due
+    }
+
+    /// Check status and local attempt time before scheduling a provider.
+    fn poll_due(&self, provider: &InferenceProvider) -> bool {
+        let Some(name) = provider.metadata.name.as_deref() else {
+            return false;
+        };
+        let Some(config) = provider.spec.model_discovery.as_ref() else {
+            return false;
+        };
+        let generation = provider.metadata.generation.unwrap_or(0);
+        let interval = Duration::from_secs(u64::from(config.effective_interval_seconds()));
+        let status_recent = provider
+            .status
+            .as_ref()
+            .and_then(|status| status.model_discovery.as_ref())
+            .filter(|status| status.observed_generation == generation)
+            .and_then(|status| status.last_attempt_time.as_deref())
+            .and_then(|value| time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok())
+            .is_some_and(|attempt| {
+                let elapsed = time::OffsetDateTime::now_utc() - attempt;
+                elapsed.is_positive()
+                    && elapsed < time::Duration::seconds(i64::from(config.effective_interval_seconds()))
+            });
+        if status_recent {
+            return false;
+        }
+        match self.last_started.get(name) {
+            Some((seen_generation, started)) if *seen_generation == generation => started.elapsed() >= interval,
+            _ => true,
+        }
+    }
+
+    /// Apply a provider event, replacing the snapshot after initial sync.
+    fn apply_watch_event(&mut self, event: watcher::Event<InferenceProvider>) {
+        match event {
+            watcher::Event::Init => self.initializing = Some(BTreeMap::new()),
+            watcher::Event::InitApply(provider) => {
+                if let Some(name) = provider.metadata.name.clone()
+                    && let Some(pending) = self.initializing.as_mut()
+                {
+                    pending.insert(name, provider);
+                }
+            },
+            watcher::Event::InitDone => {
+                if let Some(pending) = self.initializing.take() {
+                    self.providers = pending;
+                    self.last_started.retain(|name, _| self.providers.contains_key(name));
+                }
+            },
+            watcher::Event::Apply(provider) => {
+                if let Some(name) = provider.metadata.name.clone() {
+                    self.providers.insert(name, provider);
+                }
+            },
+            watcher::Event::Delete(provider) => {
+                if let Some(name) = provider.metadata.name.as_deref() {
+                    self.providers.remove(name);
+                    self.last_started.remove(name);
+                }
+            },
+        }
+    }
+
+    /// Poll one provider and update only its discovery status field.
+    async fn poll_and_record_models(&self, provider: &InferenceProvider) {
+        let Some(name) = provider.metadata.name.as_deref() else {
+            return;
+        };
+        let Some(config) = provider.spec.model_discovery.as_ref() else {
+            return;
+        };
+        let previous = provider
+            .status
+            .as_ref()
+            .and_then(|status| status.model_discovery.as_ref());
+        let timeout = Duration::from_secs(u64::from(config.timeout_seconds.get()));
+        let observation = match config.source {
+            ModelDiscoverySource::OpenAiModels => {
+                tokio::time::timeout(timeout, Box::pin(self.poll_open_ai_models(provider)))
+                    .await
+                    .unwrap_or(Err("Timeout"))
+            },
+        };
+        let discovery = Self::status_after_poll(previous, provider.metadata.generation.unwrap_or(0), observation);
+        let patch = serde_json::json!({
+            "metadata": { "resourceVersion": provider.metadata.resource_version },
+            "status": { "modelDiscovery": discovery }
+        });
+        let api: Api<InferenceProvider> = Api::all(self.client.clone());
+        if let Err(error) = api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(patch))
+            .await
+        {
+            tracing::warn!(name, %error, "model discovery: status update failed");
+        }
+    }
+
+    /// Run one OpenAI-compatible model-list poll with the provider's auth material.
+    async fn poll_open_ai_models(&self, provider: &InferenceProvider) -> Result<Vec<String>, &'static str> {
+        use credentials::{CredentialPlan, CredentialResolver as _};
+
+        let config = provider.spec.model_discovery.as_ref().ok_or("InvalidConfig")?;
+        let uri = model_discovery::models_url(&provider.spec.endpoint, config)
+            .map_err(model_discovery::DiscoveryFailure::as_str)?;
+        let name = provider.metadata.name.as_deref().unwrap_or("?");
+        let tls = crate::resources::endpoint_tls::resolve_tls_config(config.tls.as_ref(), Some(&self.client), name)
+            .await
+            .map_err(|_error| "TlsUnavailable")?;
+        let plan = credentials::credential_plan_from_auth(provider.spec.auth.as_ref())
+            .map_err(|_error| "CredentialUnavailable")?;
+        let token = match plan {
+            CredentialPlan::Bearer(reference) => Some(
+                credentials::KubernetesSecretResolver::new(self.client.clone())
+                    .resolve(&reference)
+                    .await
+                    .map_err(|_error| "CredentialUnavailable")?,
+            ),
+            CredentialPlan::Absent | CredentialPlan::Manual => None,
+        };
+        let timeout = Duration::from_secs(u64::from(config.timeout_seconds.get()));
+        model_discovery::poll_models(
+            uri,
+            timeout,
+            tls,
+            token.as_ref().map(credentials::BearerToken::expose_secret),
+        )
+        .await
+        .map_err(model_discovery::DiscoveryFailure::as_str)
+    }
+
+    /// Apply one poll result without treating a failure as an empty model set.
+    fn status_after_poll(
+        previous: Option<&ModelDiscoveryStatus>,
+        generation: i64,
+        result: Result<Vec<String>, &'static str>,
+    ) -> ModelDiscoveryStatus {
+        let mut status = previous
+            .filter(|status| status.observed_generation == generation)
+            .cloned()
+            .unwrap_or_else(|| ModelDiscoveryStatus {
+                observed_generation: generation,
+                ..ModelDiscoveryStatus::default()
+            });
+        status.last_attempt_time = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok();
+        match result {
+            Ok(models) => {
+                status.models = models;
+                status.last_successful_time = time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .ok();
+                status.last_failure_reason = None;
+            },
+            Err(reason) => {
+                status.last_failure_reason = Some(reason.to_owned());
+            },
+        }
+        status
     }
 }
 
@@ -645,6 +904,10 @@ pub(crate) fn sites_matching_selector(provider: &InferenceProvider, sites: &[Gri
     clippy::too_many_arguments,
     reason = "all parameters are distinct reconcile outputs; no logical grouping reduces them"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "status comparison and partial patch are one update"
+)]
 async fn update_status(
     provider: &InferenceProvider,
     client: &Client,
@@ -665,19 +928,35 @@ async fn update_status(
         observed_generation,
         phase,
         reason,
+        model_discovery: provider.spec.model_discovery.as_ref().and_then(|_| {
+            provider
+                .status
+                .as_ref()
+                .and_then(|status| status.model_discovery.clone())
+        }),
     };
 
     if !inference_provider_status_needs_update(provider.status.as_ref(), &status) {
         return Ok(());
     }
 
-    let patch = serde_json::json!({
+    let mut patch = serde_json::json!({
         "apiVersion": "grid.praxis-proxy.io/v1alpha1",
         "kind": "InferenceProvider",
-        "status": status
+        "status": {
+            "matchingSites": status.matching_sites,
+            "observedGeneration": status.observed_generation,
+            "phase": status.phase,
+            "reason": status.reason,
+        }
     });
+    if provider.spec.model_discovery.is_none()
+        && let Some(fields) = patch.get_mut("status").and_then(serde_json::Value::as_object_mut)
+    {
+        fields.insert("modelDiscovery".to_owned(), serde_json::Value::Null);
+    }
 
-    api.patch_status(name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(patch))
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(patch))
         .await?;
 
     info!(name, "updated InferenceProvider status");
@@ -709,6 +988,7 @@ mod tests {
             observed_generation: 2,
             phase: ProviderPhase::Available,
             reason: None,
+            model_discovery: None,
         };
         assert!(!inference_provider_status_needs_update(Some(&baseline), &baseline));
 
@@ -720,9 +1000,147 @@ mod tests {
         assert!(inference_provider_status_needs_update(None, &baseline));
     }
 
+    #[test]
+    fn discovery_success_empty_and_failure_retention() {
+        let first = ModelDiscoveryPoller::status_after_poll(None, 3, Ok(vec!["model-a".to_owned()]));
+        assert_eq!(first.models, vec!["model-a"]);
+        assert!(first.last_successful_time.is_some());
+        assert!(first.last_failure_reason.is_none());
+
+        let failed = ModelDiscoveryPoller::status_after_poll(Some(&first), 3, Err("HttpStatus"));
+        assert_eq!(failed.models, first.models);
+        assert_eq!(failed.last_successful_time, first.last_successful_time);
+        assert_eq!(failed.last_failure_reason.as_deref(), Some("HttpStatus"));
+
+        let empty = ModelDiscoveryPoller::status_after_poll(Some(&failed), 3, Ok(Vec::new()));
+        assert!(empty.models.is_empty());
+        assert!(empty.last_failure_reason.is_none());
+        assert!(empty.last_successful_time.is_some());
+    }
+
+    #[test]
+    fn discovery_spec_change_invalidates_last_good_observation() {
+        let previous = ModelDiscoveryPoller::status_after_poll(None, 3, Ok(vec!["old-model".to_owned()]));
+        let next = ModelDiscoveryPoller::status_after_poll(Some(&previous), 4, Err("HttpStatus"));
+        assert!(next.models.is_empty());
+        assert!(next.last_successful_time.is_none());
+        assert_eq!(next.observed_generation, 4);
+    }
+
+    #[tokio::test]
+    async fn discovery_status_watch_does_not_trigger_an_immediate_second_poll() {
+        let mut provider = discovery_test_provider();
+        let poller = test_model_poller();
+        provider.status = Some(InferenceProviderStatus {
+            matching_sites: Vec::new(),
+            observed_generation: 3,
+            phase: ProviderPhase::Available,
+            reason: None,
+            model_discovery: Some(ModelDiscoveryPoller::status_after_poll(None, 3, Err("HttpStatus"))),
+        });
+        assert!(!poller.poll_due(&provider));
+        provider.metadata.generation = Some(4);
+        assert!(poller.poll_due(&provider));
+        provider.metadata.generation = Some(3);
+        if let Some(status) = provider
+            .status
+            .as_mut()
+            .and_then(|status| status.model_discovery.as_mut())
+        {
+            status.last_attempt_time = Some("2020-01-01T00:00:00Z".to_owned());
+        }
+        assert!(poller.poll_due(&provider));
+    }
+
+    #[tokio::test]
+    async fn discovery_poller_selects_only_due_providers() {
+        let mut provider = test_provider("backend", "net", &[]);
+        let mut poller = test_model_poller();
+        assert!(!poller.poll_due(&provider));
+        provider = discovery_test_provider();
+        assert!(poller.poll_due(&provider));
+        poller.last_started.insert("backend".to_owned(), (3, Instant::now()));
+        assert!(!poller.poll_due(&provider));
+        provider.status = Some(InferenceProviderStatus {
+            matching_sites: Vec::new(),
+            observed_generation: 3,
+            phase: ProviderPhase::Available,
+            reason: None,
+            model_discovery: Some(ModelDiscoveryPoller::status_after_poll(
+                None,
+                3,
+                Ok(vec!["model-a".to_owned()]),
+            )),
+        });
+        assert!(!poller.poll_due(&provider));
+        provider.metadata.generation = Some(4);
+        assert!(poller.poll_due(&provider));
+    }
+
+    #[tokio::test]
+    async fn discovery_poller_replaces_and_updates_watched_sources() {
+        let mut poller = test_model_poller();
+        poller.apply_watch_event(watcher::Event::Apply(test_provider("old", "net", &[])));
+        assert!(poller.providers.contains_key("old"));
+        poller.apply_watch_event(watcher::Event::Init);
+        poller.apply_watch_event(watcher::Event::InitApply(test_provider("new", "net", &[])));
+        poller.apply_watch_event(watcher::Event::InitDone);
+        assert!(!poller.providers.contains_key("old"));
+        assert!(poller.providers.contains_key("new"));
+        poller.apply_watch_event(watcher::Event::Delete(test_provider("new", "net", &[])));
+        assert!(poller.providers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_poller_waits_for_a_complete_snapshot_and_avoids_repeat_rounds() {
+        let mut poller = test_model_poller();
+        poller.apply_watch_event(watcher::Event::Init);
+        poller.apply_watch_event(watcher::Event::InitApply(discovery_test_provider()));
+        assert!(poller.take_due().is_empty());
+        poller.apply_watch_event(watcher::Event::InitDone);
+        assert_eq!(poller.take_due().len(), 1);
+        assert!(poller.take_due().is_empty());
+    }
+
+    #[test]
+    fn discovery_interval_does_not_change_health_requeue() {
+        let mut spec = make_spec_with_health_check_config("http://backend:8000", None);
+        spec.model_discovery = Some(crate::crd::inference_provider::ModelDiscoveryConfig {
+            source: ModelDiscoverySource::OpenAiModels,
+            endpoint: None,
+            interval_seconds: Some(std::num::NonZeroU32::new(20).unwrap_or_else(|| std::process::abort())),
+            timeout_seconds: std::num::NonZeroU32::new(5).unwrap_or_else(|| std::process::abort()),
+            tls: None,
+        });
+        assert_eq!(requeue_interval_for_provider(&spec), REQUEUE_INTERVAL);
+        if let Some(config) = spec.model_discovery.as_mut() {
+            config.interval_seconds = None;
+        }
+        assert_eq!(requeue_interval_for_provider(&spec), REQUEUE_INTERVAL);
+    }
+
     // -----------------------------------------------------------------------
     // Test utilities
     // -----------------------------------------------------------------------
+
+    fn test_model_poller() -> ModelDiscoveryPoller {
+        let config = kube::Config::new("http://127.0.0.1:1".parse().unwrap_or_else(|_| std::process::abort()));
+        let client = Client::try_from(config).unwrap_or_else(|_| std::process::abort());
+        ModelDiscoveryPoller::new(client, crate::shutdown::Shutdown::never())
+    }
+
+    fn discovery_test_provider() -> InferenceProvider {
+        let mut provider = test_provider("backend", "net", &[]);
+        provider.spec.model_discovery = Some(crate::crd::inference_provider::ModelDiscoveryConfig {
+            source: ModelDiscoverySource::OpenAiModels,
+            endpoint: None,
+            interval_seconds: None,
+            timeout_seconds: std::num::NonZeroU32::new(5).unwrap_or_else(|| std::process::abort()),
+            tls: None,
+        });
+        provider.metadata.generation = Some(3);
+        provider
+    }
 
     fn test_site(name: &str, network: &str) -> GridSite {
         serde_json::from_value(serde_json::json!({
@@ -876,7 +1294,7 @@ mod tests {
     }
 
     fn secret_with_key(key: &str, value: &[u8]) -> Secret {
-        let mut data = std::collections::BTreeMap::new();
+        let mut data = BTreeMap::new();
         data.insert(key.to_owned(), ByteString(value.to_vec()));
         Secret {
             data: Some(data),
@@ -2601,6 +3019,7 @@ mod tests {
                 capabilities: Vec::new(),
                 context_window: None,
             }],
+            model_discovery: None,
             provider_kind: "self_hosted".to_owned(),
             routing_cluster_ref: None,
             metrics_config: None,
