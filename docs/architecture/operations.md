@@ -50,7 +50,7 @@ for the full values reference.
 kubectl apply -k deploy/
 
 # Or step-by-step:
-kubectl apply -f deploy/crds/
+kubectl apply -k deploy/crds/
 kubectl apply -k deploy/operator/
 ```
 

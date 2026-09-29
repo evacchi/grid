@@ -32,7 +32,7 @@ Custom Resource Definitions are generated from the operator source code:
 ./scripts/generate-deployment-crds.sh
 
 # Validate CRD syntax
-kubectl --dry-run=server create -f deploy/crds/
+kubectl --dry-run=server create -k deploy/crds/
 ```
 
 **Important**: Do not hand-edit CRD files. They are generated from the Rust code.
@@ -51,7 +51,7 @@ kubectl --dry-run=server create -f deploy/crds/
 kubectl apply -k deploy/
 
 # Or step-by-step:
-kubectl apply -f deploy/crds/
+kubectl apply -k deploy/crds/
 kubectl apply -k deploy/operator/
 
 # Verify operator is running

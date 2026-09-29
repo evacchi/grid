@@ -18,12 +18,23 @@ cargo run -p operator --bin generate_crds | jq -r '.items[1]' | yq eval -P > "$C
 cargo run -p operator --bin generate_crds | jq -r '.items[2]' | yq eval -P > "$CRD_DIR/gridsite.yaml"
 cargo run -p operator --bin generate_crds | jq -r '.items[3]' | yq eval -P > "$CRD_DIR/inferenceprovider.yaml"
 
+# Kustomization over the generated CRDs, for kubectl apply -k and kustomize consumers.
+{
+  echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+  echo "kind: Kustomization"
+  echo "resources:"
+  for f in "$CRD_DIR"/*.yaml; do
+    [ "$(basename "$f")" = kustomization.yaml ] && continue
+    echo "  - $(basename "$f")"
+  done
+} > "$CRD_DIR/kustomization.yaml"
+
 echo "CRDs generated in $CRD_DIR:"
 ls -la "$CRD_DIR"
 
 echo ""
 echo "To validate CRDs:"
-echo "  kubectl --dry-run=server create -f deploy/crds/"
+echo "  kubectl --dry-run=server create -k deploy/crds/"
 echo ""
 echo "To regenerate after schema changes:"
 echo "  ./scripts/generate-deployment-crds.sh"

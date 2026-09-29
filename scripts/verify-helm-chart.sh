@@ -83,6 +83,15 @@ for crd in agenttoolprovider gridnetwork gridsite inferenceprovider; do
   fi
 done
 
+# A CRD missing from the kustomization is silently dropped by kustomize consumers.
+listed=$(sed -n 's/^  - //p' "$DEPLOY_CRDS/kustomization.yaml" | sort)
+present=$(cd "$DEPLOY_CRDS" && ls -1 *.yaml | grep -vx kustomization.yaml | sort)
+if [ "$listed" = "$present" ]; then
+  pass "crd kustomization lists every CRD"
+else
+  fail "crd kustomization out of sync with $DEPLOY_CRDS (rerun scripts/generate-deployment-crds.sh)"
+fi
+
 # ── Default template rendering ───────────────────────────────────────
 echo ""
 echo "=== Template rendering ==="
@@ -519,6 +528,15 @@ if [ "${KIND:-}" = "1" ] || [ "${1:-}" = "--kind" ]; then
   fi
 
   KCTX="kind-${KIND_CLUSTER}"
+
+  # ── CRD kustomization ────────────────────────────────────────────
+  echo ""
+  echo "=== CRD kustomization ==="
+  if kubectl --context "$KCTX" apply --dry-run=server -k "$DEPLOY_CRDS" >/dev/null 2>&1; then
+    pass "kind: crds apply -k (server dry-run)"
+  else
+    fail "kind: crds apply -k (server dry-run)"
+  fi
 
   # Build install args — use CI tag override when set
   OP_INSTALL_ARGS=()
