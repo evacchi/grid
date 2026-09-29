@@ -1,7 +1,8 @@
 # Praxis Gateway Helm Chart (Temporary)
 
 Temporary workload chart that deploys the Praxis AI gateway process directly
-as a Kubernetes Deployment. This chart exists in the Grid repository because
+as a Kubernetes Deployment. This chart currently lives in the
+`praxis-proxy/grid` repository because
 no Praxis/Gateway Operator or supported Kubernetes installation path exists
 yet.
 
@@ -9,9 +10,10 @@ yet.
 dynamic discovery. It mounts a supplied Praxis configuration and optional
 TLS, overlay, and credential Secrets.
 
-**Ownership:** Temporary Grid integration asset. Long-term ownership moves to
+**Ownership:** Temporary integration chart in this repository. Long-term ownership moves to
 the future Praxis/Gateway Operator repository when that deployment API and
-release ownership exist. Do not treat this as a permanent Grid responsibility.
+release ownership exist. Do not treat the `praxis-gateway` chart as a permanent
+responsibility of this repository.
 
 ## Prerequisites
 
@@ -41,10 +43,10 @@ For immutable deployments, set `image.digest` explicitly to
 Praxis AI 0.4.0 depends on Praxis core 0.7.0; these are separate release
 versions.
 
-The standard Praxis AI 0.4.0 image supports Grid provider selection and load
+The standard Praxis AI 0.4.0 image supports AGN provider selection and load
 balancing and includes Basic Auth. It does not include the optional
 `token-rate-limit-filter` required by the distributed token quota qualification.
-That qualification is not supported by this default image; Grid does not
+That qualification is not supported by this default image; AGN does not
 publish a replacement AI rollup.
 
 The chart uses [Semantic Versioning](https://semver.org/). Its `version`
@@ -125,13 +127,13 @@ directory read-only.
 Praxis can hot-reload a routing overlay as soon as its file changes. A normal
 ConfigMap volume, however, is updated by the kubelet on an eventual refresh
 cycle. That delay can be longer than a temporary provider-pressure event, so a
-gateway may continue serving an old preference even though Grid has already
+gateway may continue serving an old preference even though AGN has already
 published a new overlay.
 
 Enable `grid-overlay-sync` when prompt routing convergence matters:
 
 ```text
-Grid operator updates ConfigMap
+AGN Operator updates ConfigMap
              |
              | Kubernetes API watch
              v
@@ -177,9 +179,9 @@ content-addressed revision, and SHA-256 digest. Invalid replacements do not
 touch the serving file. ConfigMap deletion or temporary API loss marks the
 sidecar degraded while retaining the last-known-good overlay.
 
-This mechanism removes kubelet projection latency only after Grid applies a
+This mechanism removes kubelet projection latency only after AGN applies a
 ConfigMap. Total route-change time still includes metrics publication, the
-provider scrape, Grid reconciliation, ConfigMap application, sidecar delivery,
+provider scrape, AGN reconciliation, ConfigMap application, sidecar delivery,
 and Praxis hot reload. Overlay-sync does not change the scrape or reconcile
 intervals.
 
@@ -194,7 +196,7 @@ with different values:
 
 **Edge gateway:**
 - Listens on port 8080 (HTTP)
-- Mounts an overlay ConfigMap from the Grid operator
+- Mounts an overlay ConfigMap from the AGN Operator
 - Mounts a TLS Secret for upstream connections
 
 **Provider gateway:**
@@ -216,6 +218,6 @@ the exact Service name:
 fullnameOverride: consumer-gateway   # Service name = consumer-gateway
 ```
 
-The Grid Operator's `gateway.serviceName` must match the consumer
+The AGN Operator's `gateway.serviceName` must match the consumer
 gateway's Service name. When using `fullnameOverride`, set
 `gateway.serviceName` to the same value in the operator Helm values.

@@ -1,7 +1,7 @@
-# Contributing to AI Grid
+# Contributing to AI Grid Network (AGN)
 
 Thank you for your interest in contributing to
-AI Grid! We welcome contributions of all kinds:
+AGN! We welcome contributions of all kinds:
 code, documentation, bug reports, and feature
 proposals.
 
@@ -69,7 +69,7 @@ by CI.
 
 ## Code Style
 
-AI Grid enforces a strict coding style. Key points:
+AGN enforces a strict coding style. Key points:
 
 - `#![deny(unsafe_code)]` in all crate roots
 - Clippy with `-D warnings` (zero tolerance)

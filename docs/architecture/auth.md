@@ -2,25 +2,25 @@
 
 ## Authentication layers
 
-Grid-based deployments involve up to three distinct authentication layers.
+AI Grid Network (AGN) deployments involve up to three distinct authentication layers.
 Each serves a different trust boundary and must not be conflated.
 
 | Layer | What it authenticates | Where it is enforced |
 |---|---|---|
 | **External caller auth** | The end customer's identity (bearer token, JWT, API key). | At the Praxis edge or consumer gateway, before `intelligent_route`. |
-| **Grid mTLS peer identity** | The edge or consumer gateway's Grid site certificate. | At the provider gateway, via `peer_identity_trust`. |
+| **AGN mTLS peer identity** | The edge or consumer gateway's AGN site certificate. | At the provider gateway, via `peer_identity_trust`. |
 | **Provider credential injection** | The final-hop gateway's credential for a SaaS/cloud provider API. | At the final-hop gateway, via `credential_inject`. |
 
 The customer's `Authorization` header must not be forwarded as a provider
 credential.  Public TLS certificates (for external endpoints) must be kept
-separate from Grid site mTLS certificates.
+separate from AGN site mTLS certificates.
 
 **External caller authentication** is relevant for external client ingress,
-where customers outside the cluster reach a public endpoint.  Grid's provider
+where customers outside the cluster reach a public endpoint. AGN's provider
 `accessPolicy` is site-oriented, not tenant-oriented: an edge site's provider
 eligibility does not authorize every customer to every model.  Production
 external service requires request-time tenant-to-model authorization that is
-separate from Grid's site-level access control.  This is not yet implemented.
+separate from AGN's site-level access control. This is not yet implemented.
 
 See [External Client Ingress](external-ingress.md) for the full external
 authentication model.
@@ -36,17 +36,17 @@ The implemented native path is `bearer_token`:
 
 1. A provider Secret contains the provider token.
 2. `InferenceProvider.spec.auth.secretRef` points at that Secret.
-3. The Grid Operator validates the Secret reference.
-4. Grid writes only the Secret reference into the routing overlay.
+3. The AGN Operator validates the Secret reference.
+4. AGN writes only the Secret reference into the routing overlay.
 5. The final-hop gateway mounts the Secret as a file.
 6. After `intelligent_route` selects a provider candidate, Praxis AI runs
    `credential_inject`, reads the selected token file, and injects
    `Authorization: Bearer <token>` on the outbound provider request.
 
-Provider tokens are never written into Grid status, routing overlays, or
+Provider tokens are never written into AGN status, routing overlays, or
 consumer gateway `ConfigMap`s.
 
-**Implementation status:** the Grid-side contract is implemented: the operator
+**Implementation status:** the AGN-side contract is implemented: the operator
 validates `secretRef`, projects only the reference into `routing-config.json`, and
 can render consumer Praxis config with file-backed credential references.  The
 request-time filter is the Praxis AI `credential_inject` filter.  Runtime
@@ -69,7 +69,7 @@ The request path is:
 1. Users or external secret managers create provider credentials.
 2. Kubernetes Secrets store those credentials.
 3. `InferenceProvider.spec.auth.secretRef` points at the Secret.
-4. The Grid Operator validates the Secret and projects only the credential
+4. The AGN Operator validates the Secret and projects only the credential
    reference into the routing overlay.
 5. The final-hop gateway config maps that reference to a mounted Secret file
    at the deployment point allowed to call the backend.
@@ -81,7 +81,7 @@ Credential placement follows the final-hop rule:
 | Route shape | Where the credential lives | Where injection happens |
 |---|---|---|
 | Direct API or cloud fallback from the consumer gateway | Secret mounted into that consumer/final-hop gateway pod | The same gateway injects or signs before calling the provider API. |
-| Remote Grid site reached over gateway-to-gateway mTLS | Secret mounted only in the remote provider site or provider-side component | The provider-side final-hop component injects before calling its local backend, if that backend needs a provider credential. |
+| Remote AGN site reached over gateway-to-gateway mTLS | Secret mounted only in the remote provider site or provider-side component | The provider-side final-hop component injects before calling its local backend, if that backend needs a provider credential. |
 | Local self-hosted backend with no provider API credential | No provider token required | No HTTP credential injection; mTLS or local network policy handles gateway/backend trust. |
 
 In this document, **consumer gateway** (or **ingress gateway**) means the Praxis
@@ -140,7 +140,7 @@ injection is kept for regression comparison while the xtask bridge still exists.
 For both validation paths, the install-time input is the same Kubernetes Secret
 plus an `InferenceProvider.spec.auth.secretRef`.  The Secret contains the
 provider token; the `InferenceProvider` points at the Secret without copying the
-token into Grid resources.
+token into AGN resources.
 
 ```yaml
 apiVersion: v1
@@ -175,7 +175,7 @@ The difference is where the resolved token lands:
 
 ### Secret placement and production responsibilities
 
-The native injection path keeps credential bytes out of Grid resources and
+The native injection path keeps credential bytes out of AGN resources and
 consumer gateway `ConfigMap`s. Production deployments still need explicit
 ownership for credential Secret placement and rotation:
 
@@ -187,7 +187,7 @@ ownership for credential Secret placement and rotation:
   can render the consumer Praxis `ConfigMap` from routing overlay data,
   including `credential_inject` file references for direct API-provider
   routes.
-- **Cross-cluster delivery**: Grid does not copy Secrets across clusters.
+- **Cross-cluster delivery**: AGN does not copy Secrets across clusters.
   GitOps, External Secrets, Vault, or another platform mechanism must place the
   Secret in the cluster where the final-hop component runs.
 
@@ -329,7 +329,7 @@ workload's identity and access policies.
 SWIM gossip carries membership packets, gateway address broadcasts, public
 certificate PEM broadcasts, and CRDT provider state.  When
 `GridNetwork.spec.tls.swimKeyRef` is configured and the referenced Secret
-resolves to a valid 32-byte key, the Grid operator applies the key before
+resolves to a valid 32-byte key, the AGN Operator applies the key before
 announcing CRD seeds or publishing certificate/provider state for that
 `GridNetwork`.  Authenticated SWIM traffic uses AES-256-GCM.  Incoming packets
 that do not authenticate are silently dropped before reaching the membership
@@ -400,12 +400,12 @@ correct `O=` value is accepted.
 
 ### Authentication vs authorization
 
-Authentication answers: "is this peer really the Grid site or gateway it claims
+Authentication answers: "is this peer really the AGN site or gateway it claims
 to be?"  In the data plane, this is handled by mTLS peer identity and certificate
 validation.
 
 Authorization answers: "is this authenticated peer allowed to participate in
-this Grid or carry this traffic?"  Grid policy and gateway trust configuration
+this AI Grid Network or carry this traffic?" AGN policy and gateway trust configuration
 make that decision.
 
 SWIM discovery is neither authentication nor authorization.  A peer discovered
@@ -415,7 +415,7 @@ still enforces peer identity on every request.
 
 ### Public certificate exchange
 
-The Grid operator propagates a site's public certificate PEM to peers via SWIM
+The AGN Operator propagates a site's public certificate PEM to peers via SWIM
 state broadcasts when the local `GridNetwork` has `spec.tls.siteSecretRef`
 configured.  Before storage, the receiving operator runs a structural check:
 
@@ -447,7 +447,7 @@ against `spec.egress.tls.serverName`, proves possession of the server private ke
 through the handshake, and checks the live leaf certificate against
 `spec.trust.canonicalFingerprints`.
 
-GridSite Active is a control-plane eligibility signal. It means Grid has enough
+GridSite Active is a control-plane eligibility signal. It means AGN has enough
 site and gateway identity information to consider the site for overlay
 generation. It does not prove that Praxis has loaded the latest routing config
 or authorized a particular request.
@@ -496,7 +496,7 @@ provider-side authorization, which are enforced separately by the data plane.
 
 | Who | What |
 |-----|------|
-| **Grid Operator** | Validates provider credential `secretRef`; projects credential references (never token values) into routing overlays; can render opt-in consumer Praxis `ConfigMap`; generates local CA and site cert Secrets; marks `GridSite.status.phase = Active` after the configured identity-aware gateway probe succeeds. |
+| **AGN Operator** | Validates provider credential `secretRef`; projects credential references (never token values) into routing overlays; can render opt-in consumer Praxis `ConfigMap`; generates local CA and site cert Secrets; marks `GridSite.status.phase = Active` after the configured identity-aware gateway probe succeeds. |
 | **Gateway filters** | `intelligent_route` selects candidates and writes credential metadata; `credential_inject` reads a mounted Secret file and injects credentials per request; `peer_identity_trust` verifies peer certificate identity on provider gateways. |
 | **Deployment / platform** | Provisions gateway trust material (CA cert or cert bundle) at the path referenced by the consumer config's `ca_path`; distributes the Grid CA cert to remote clusters where gateways need to verify peer identity; configures the provider gateway's peer identity filter; manages gateway rollout when trust material changes. |
 | **Workload** | Sends requests to the Gateway, optionally with routing headers — never handles provider credentials. |
@@ -508,4 +508,4 @@ trust information to include the site in routing decisions.
 Secure data-plane traffic readiness requires additional steps beyond Active status: gateway
 trust material provisioning (CA cert or cert bundle), peer identity filter configuration,
 routing configuration loading, and provider authorization. These are deployment prerequisites
-and runtime readiness checks, not automatic outputs of Grid's gateway health evaluation.
+and runtime readiness checks, not automatic outputs of AGN's gateway health evaluation.

@@ -1,14 +1,14 @@
-# Grid Operations
+# AGN Operations
 
-This guide covers production installation, grid formation, site lifecycle,
+This guide covers AGN production installation, network formation, site lifecycle,
 routing configuration, security, and observability. Development-only
 orchestration is isolated under **Development Validation Environments**.
 
-## 1. Deploy the Grid Operator
+## 1. Deploy the AGN Operator
 
 ### Install
 
-Grid provides a Helm chart and Kustomize manifests for the operator and CRDs.
+AGN provides a Helm chart and Kustomize manifests for the operator and CRDs.
 
 **Option 1: Helm (recommended)**
 
@@ -46,7 +46,7 @@ for the full values reference.
 **Option 2: Kustomize**
 
 ```console
-# Complete Grid deployment (CRDs + operator)
+# Complete AGN deployment (CRDs + `grid-operator`)
 kubectl apply -k deploy/
 
 # Or step-by-step:
@@ -111,14 +111,14 @@ The operator runs as a single binary with multiple
 controllers (one per CRD type) in the same process.  No
 SWIM runtime starts until a `GridNetwork` resource exists.
 
-**Important**: Grid deploys only the operator and CRDs. Cluster lifecycle,
+**Important**: AGN deploys only the operator and CRDs. Cluster lifecycle,
 Praxis AI gateways, inference runtimes, load-balancer integrations, and DNS
 remain deployment-platform responsibilities.
 
 Praxis AI gateway deployment is separate and requires:
 1. Praxis AI image with required filters (`intelligent_route`, `credential_inject`)
-2. Consumer gateway configuration referencing Grid-generated ConfigMaps
-3. Provider gateway deployment with Grid-compatible endpoints
+2. Consumer gateway configuration referencing AGN-generated ConfigMaps
+3. Provider gateway deployment with AGN-compatible endpoints
 
 ### Operator image
 
@@ -184,7 +184,7 @@ apply (`patch`).  SSA on a non-existent resource requires
 granted for `secrets` and `configmaps`.  `delete` and
 `update` are not granted.
 
-**Grid CRDs (cluster-scoped, `grid-operator-crd`):**
+**AGN CRDs (cluster-scoped, `grid-operator-crd`):**
 
 | Resource | Verbs | Why |
 |---|---|---|
@@ -410,7 +410,7 @@ unqualified rolling update.
 
 **Transport-security contract**
 
-SWIM is the Grid control-plane membership and state broadcast channel.  When
+SWIM is the AGN control-plane membership and state broadcast channel. When
 `spec.tls.swimKeyRef` is configured and the referenced Secret resolves to a
 valid 32-byte key, reconcile applies the key before announcing CRD seeds or
 publishing certificate/provider state.  From that point, outgoing SWIM UDP
@@ -568,10 +568,10 @@ The trust bootstrap for a remote site progresses through these steps:
 
 ### Authentication vs authorization
 
-| Concept | Question it answers | Grid mechanism |
+| Concept | Question it answers | AGN mechanism |
 |---|---|---|
-| Authentication | "Is this peer really the site it claims to be?" | Identity-aware Grid health probe plus gateway mTLS peer validation on each request |
-| Authorization | "Is this authenticated peer allowed to participate in this Grid or receive/send this traffic?" | Local Grid policy plus destination gateway enforcement |
+| Authentication | "Is this peer really the site it claims to be?" | Identity-aware AGN health probe plus gateway mTLS peer validation on each request |
+| Authorization | "Is this authenticated peer allowed to participate in this AI Grid Network or receive/send this traffic?" | Local AGN policy plus destination gateway enforcement |
 
 A peer must satisfy both.  A SWIM peer must never become routable solely because
 it gossiped successfully.
@@ -622,7 +622,7 @@ control-plane health evaluation succeeds.
 
 ## 6. Capability Negotiation
 
-Sites publish capability and provider state through Grid control-plane records
+Sites publish capability and provider state through AGN control-plane records
 and CRDT-over-SWIM propagation.  Capability information can include models,
 tools, agents, and provider availability signals.
 
@@ -760,7 +760,7 @@ The sidecar adds correctness controls as well as lower latency:
 - a dedicated ServiceAccount token is mounted only into the init and sidecar
   containers. Praxis has no Kubernetes API access.
 
-The sidecar does not change the metrics scrape interval or force the Grid
+The sidecar does not change the metrics scrape interval or force the AGN
 operator to reconcile. End-to-end convergence is still:
 
 ```text
@@ -794,20 +794,20 @@ load_balancer
   -> forwards to the selected provider cluster
 ```
 
-The token is not stored in the Grid overlay or consumer
+The token is not stored in the AGN overlay or consumer
 Praxis `ConfigMap`.
 
 For direct API-provider and cloud-provider fallback, the
 consumer gateway is often also the final-hop gateway, so the
-credential Secret is mounted there.  For remote Grid sites,
+credential Secret is mounted there. For remote AGN sites,
 provider credentials should live only in the remote provider
 site or provider-side component that makes the final backend
-call.  Grid carries the reference needed for routing and
+call. AGN carries the reference needed for routing and
 configuration; it does not copy Secret values between
 clusters.
 
 The native path requires a Praxis AI image that includes the
-`credential_inject` filter.  Grid can render the
+`credential_inject` filter. AGN can render the
 file-backed filter config today, but runtime deployments must
 use an AI image with that filter merged and published.
 
@@ -986,7 +986,7 @@ includes `gridsites/status` with verbs `get` and `patch`.
 
 ## Consumer Config
 
-When `GatewayRef.consumerConfig.enabled: true`, the Grid operator applies a
+When `GatewayRef.consumerConfig.enabled: true`, the AGN Operator applies a
 `ConfigMap` in the gateway's namespace on every reconcile.  The
 `grid-operator-resources` `ClusterRole` includes `configmaps` with verbs
 `create` and `patch`.  A `RoleBinding` in the gateway's namespace is required
@@ -1009,7 +1009,7 @@ to credential Secrets in the gateway namespace for config generation.
 The final-hop gateway or provider-side component making the final backend call
 needs the credential Secret mounted.  Secret provisioning in that cluster is
 the responsibility of external tooling (platform automation, External Secrets,
-Vault, or a manual process).  The Grid operator does not copy Secrets across
+Vault, or a manual process). The AGN Operator does not copy Secrets across
 clusters.
 
 ### Cross-cluster limitations
@@ -1034,9 +1034,9 @@ record, or automatically complete a `Left` transition on process shutdown.
 Departure therefore preserves control-plane evidence and requires explicit
 site lifecycle cleanup by the deployment owner.
 
-## Adding a New Site to an Existing Grid
+## Adding a New Site to an Existing AI Grid Network
 
-1. Deploy the Grid Operator on the new cluster
+1. Deploy the AGN Operator on the new cluster
 2. Create a `GridNetwork` with any existing cluster
    as a seed
 3. SWIM discovers the existing cluster, which shares
@@ -1054,7 +1054,7 @@ site lifecycle cleanup by the deployment owner.
 External ingress operates as a two-stage service:
 
 ```text
-managed GTM -> Praxis AI edge -> Grid-selected Praxis provider gateway
+managed GTM -> Praxis AI edge -> AGN-selected Praxis provider gateway
 ```
 
 The production deployment inventory contains:
@@ -1062,8 +1062,8 @@ The production deployment inventory contains:
 | Layer | Operational inventory |
 |---|---|
 | GTM | Public service name, public TLS ownership, edge origins, health probes, steering policy, drain/failback policy, DDoS/WAF controls. |
-| Edge | At least two failure domains, pinned Grid/AI/Praxis compatibility set, caller authentication, tenant/model authorization, request limits, accepted overlay status. |
-| Grid | One edge-specific `GatewayRef` and routing perspective per edge location, authenticated site state, bounded admission policy, versioned overlay revisions. |
+| Edge | At least two failure domains, pinned AGN/AI/Praxis compatibility set, caller authentication, tenant/model authorization, request limits, accepted overlay status. |
+| AGN | One edge-specific `GatewayRef` and routing perspective per edge location, authenticated site state, bounded admission policy, versioned overlay revisions. |
 | Provider | Private backend, provider Praxis gateway, mTLS listener, trusted edge identities, local authorization, local limits, and final-hop credentials. |
 
 ### Edge Readiness
@@ -1170,7 +1170,7 @@ Available commands:
 | `cargo xtask env verify-mtls-trust` | Verifies provider gateway mTLS enforcement (positive + negative cases) |
 | `cargo xtask env verify-api-fallback-native` | Verifies native `intelligent_route` → `credential_inject` credential injection with token bytes absent from overlay and consumer ConfigMap |
 | `cargo xtask env verify-stale-gc-ttl` | Verifies `GridNetwork.spec.staleCandidateTtlSeconds` evicts stale remote candidates from the rendered overlay |
-| `cargo xtask env verify-responses-routing` | Verifies `/v1/responses` request parsing and Grid overlay routing using `openai_responses_format` → `intelligent_route` filter chain |
+| `cargo xtask env verify-responses-routing` | Verifies `/v1/responses` request parsing and AGN overlay routing using `openai_responses_format` -> `intelligent_route` filter chain |
 | `cargo xtask env verify-crd-schema` | Verifies required generated CRD schema fields without requiring kind clusters |
 | `cargo xtask env verify-swim-dns-hostnames` | Verifies hostname-based SWIM advertise/seeds, membership convergence, and CRDT provider-state propagation |
 | `cargo xtask env verify-operator-install-rbac` | Applies install manifests, runs positive/negative RBAC checks, proves minimal reconcile succeeds |
@@ -1202,7 +1202,7 @@ cargo xtask env verify-crd-schema
 ```
 
 This command runs the CRD generator and verifies the
-generated schema contains required Grid status and
+generated schema contains required AGN status and
 InferenceProvider routing and metrics fields. It does
 not require kind clusters.
 
@@ -1393,7 +1393,7 @@ localhost UDP sockets and ephemeral fixtures — they are
 not a substitute for in-cluster production deployment.
 
 In the production architecture, continuous reconciliation
-is the responsibility of the Grid Operator and its
+is the responsibility of the AGN Operator and its
 controllers. `xtask env` commands are a validation
 convenience layer, not a production orchestrator.
 
@@ -1430,7 +1430,7 @@ provider endpoints in the environment config.
 ### Separation from production reconciliation
 
 The production architecture is operator-driven. The
-Grid Operator reconciliation path owns long-lived
+AGN Operator reconciliation path owns long-lived
 management of:
 
 - `GridNetwork`, `GridSite`, and `InferenceProvider`
@@ -1441,7 +1441,7 @@ management of:
 `xtask env` is a development convenience layer that
 uses the same config and cert infrastructure, not a
 production orchestrator. Production reconciliation
-semantics are defined by the Grid Operator controllers,
+semantics are defined by the AGN Operator controllers,
 not by the imperative `xtask env` command flow.
 
 ### Opinionated walkthroughs and topology fixtures
@@ -1451,16 +1451,16 @@ documentation for specific gateway-to-gateway
 topologies are maintained outside this repository
 in the accompanying research-spikes repository.
 
-Grid keeps generic, config-driven, reusable commands.
+AGN keeps generic, config-driven, reusable commands.
 Topology-specific fixtures, static manifests, and
-presentation walkthroughs belong outside the Grid
+presentation walkthroughs belong outside the AGN
 repository.
 
 ## References
 
 - [HashiCorp memberlist](https://github.com/hashicorp/memberlist) — reference
   design for SWIM-style membership, gossip transport encryption, key rotation,
-  and join/admission behavior. Grid uses foca rather than memberlist; foca used
-  the Go-based memberlist implementation as a reference architecture, and Grid
+  and join/admission behavior. AGN uses foca rather than memberlist; foca used
+  the Go-based memberlist implementation as a reference architecture, and AGN
   uses memberlist the same way: as an architectural reference for control-plane
   gossip hardening.

@@ -20,7 +20,7 @@ flowchart LR
   CRDT --> O
 ```
 
-Grid applies capability, authorization, trust, health, freshness, and admission
+AGN applies capability, authorization, trust, health, freshness, and admission
 checks before it forms selection groups. With `geographyFirst`, the closest
 viable locality tier is active and remote tiers remain fallback; with
 `scoreFirst`, eligible providers from different sites can share the active

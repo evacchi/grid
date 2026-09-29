@@ -1,11 +1,11 @@
 # Helm Values
 
-This directory owns demo-specific values for the Grid operator and the
+This directory owns demo-specific values for the AGN Operator and the
 consumer and provider Praxis gateway releases at each site.
 
 Each site should render three releases from structured values:
 
-- one Grid operator;
+- one AGN Operator;
 - one consumer gateway without provider credentials;
 - one provider gateway with only its local provider credentials.
 

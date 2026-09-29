@@ -1,5 +1,16 @@
 # Development Conventions
 
+## Project naming
+
+Use **AI Grid Network (AGN)** as the human-facing name in documentation. After
+the first full reference, use **AGN** where it reads naturally. Use actual
+software names such as `grid-operator` and `praxis-gateway` when referring to
+their binaries, deployments, images, or charts. Keep established identifiers
+such as `GridNetwork`, `GridSite`, `grid-*`, `GRID_*`, and `grid_*` unchanged.
+This documentation-only naming change does not rename APIs, binaries,
+deployments, images, charts, workflows, or downstream identifiers; downstream
+naming alignment is deferred to a separate effort.
+
 ## Coding Style
 
 ### General Principles
@@ -100,7 +111,7 @@ not a substitute for tests in this repository.  Code
 intended only for a specific external walkthrough
 belongs in an external research or demo repository,
 not here.  Generic, config-driven, reusable commands
-belong in Grid and require the test coverage described
+belong in AGN and require the test coverage described
 above.
 
 #### Mutation Testing

@@ -1,6 +1,6 @@
 # Administrative provider draining
 
-Grid supports graceful maintenance of inference providers through the
+AGN supports graceful maintenance of inference providers through the
 optional `InferenceProvider.spec.trafficPolicy.drain` field. The omitted or
 false value preserves the existing health and metrics behavior. When true,
 the operator keeps an otherwise healthy candidate in the routing overlay but
@@ -18,7 +18,7 @@ Provider membership for administrative operations is explicit through
 `spec.gatewayRef`. It is not inferred from endpoint strings. A gateway-wide
 operation selects every provider with the requested reference, prints the
 sorted selection, supports `--dry-run`, applies the change idempotently, and
-waits for the requested state to be observed. Grid remains entirely outside
+waits for the requested state to be observed. AGN remains entirely outside
 the request-time path.
 
 The basic operational sequence is:

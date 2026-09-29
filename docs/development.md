@@ -1,5 +1,7 @@
 # Development
 
+Development and validation guidance for AI Grid Network (AGN).
+
 ## Requirements
 
 - Rust stable 1.96+
@@ -13,7 +15,7 @@ cover code style, testing requirements, file
 organization, and security practices. Submissions
 that do not follow these conventions will be rejected.
 
-Grid also follows the shared
+AGN also follows the shared
 [Praxis development conventions], including the rules for comments,
 tracing, testing, lint suppressions, and human review.
 

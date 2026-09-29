@@ -1,19 +1,19 @@
 # Provider Scoring
 
 For how scoring interacts with routing policy, selection groups, and request-time
-selection, see the [Grid Routing Guide](../routing.md). This page covers metric
+selection, see the [AGN Routing Guide](../routing.md). This page covers metric
 inputs, normalization, and the provider scoring implementation.
 
-Grid scores provider pools when the operator renders a Praxis routing overlay.
-Praxis reads that overlay from memory at request time; it does not call Grid,
+AGN scores provider pools when the operator renders a Praxis routing overlay.
+Praxis reads that overlay from memory at request time; it does not call AGN,
 Kubernetes, the operator, or an EPP metrics endpoint on the request path.
 
 ## Responsibility Boundary
 
-Grid and llm-d make different decisions:
+AGN and llm-d make different decisions:
 
 ```text
-Grid operator (before the request)
+AGN Operator (before the request)
   EPP pool metrics -> select and score a provider pool -> routing overlay
 
 Praxis edge (during the request)
@@ -23,11 +23,11 @@ llm-d EPP (inside the selected provider)
   request + endpoint state -> select an inference pod
 ```
 
-Grid uses provider-level telemetry that can be collected asynchronously. llm-d
+AGN uses provider-level telemetry that can be collected asynchronously. llm-d
 EPP can additionally use request-specific information, such as how much of the
 current prompt prefix is cached on each pod.
 
-Grid therefore does not offer a `prefixAware` scoring strategy. A pool-average
+AGN therefore does not offer a `prefixAware` scoring strategy. A pool-average
 KV-cache utilization metric measures capacity pressure; it does not prove that
 the current request's prefix is cached. Prefix affinity belongs in EPP.
 
@@ -35,7 +35,7 @@ the current request's prefix is cached. Prefix affinity belongs in EPP.
 
 `GridNetwork.spec.scoringPolicy.strategy` selects one provider-level strategy.
 This follows llm-d's independent-scorer model without exposing a plugin system
-or an arbitrary matrix of weights in the Grid API.
+or an arbitrary matrix of weights in the `GridNetwork` API.
 
 When `scoringPolicy` is present, `strategy` is required. Omit the entire
 `scoringPolicy` object to use the `noMetrics` default. This also makes manifests
@@ -83,7 +83,7 @@ The operator prefers the provider with the shortest normalized queue:
 score = 1 - normalized_queue_depth
 ```
 
-This corresponds to the intent of llm-d's `queue-scorer`. Grid normalizes an
+This corresponds to the intent of llm-d's `queue-scorer`. AGN normalizes an
 EPP pool-average queue count using `metricsConfig.queueCapacity` and clamps the
 result to `0.0..1.0`.
 
@@ -109,13 +109,13 @@ scores higher. This strategy is about available capacity, not cache affinity.
 
 Queue depth and KV-cache pressure describe different operating objectives. A
 weighted sum can hide which condition caused a provider to win and can produce
-surprising crossover points. Grid keeps the normal configuration explicit: use
+surprising crossover points. AGN keeps the normal configuration explicit: use
 `noMetrics`, or choose the single signal that represents the deployment's
 provider-selection goal.
 
 llm-d supports weighted scorer composition because it performs fine-grained,
-per-request endpoint scheduling. Grid deliberately exposes less complexity at
-the cross-site provider layer. New strategies should be added only when Grid
+per-request endpoint scheduling. AGN deliberately exposes less complexity at
+the cross-site provider layer. New strategies should be added only when AGN
 has a real provider-level signal with defined freshness and normalization.
 
 ## Metrics Configuration
@@ -151,10 +151,10 @@ spec:
 | `timeout` | Per-scrape timeout. |
 | `poolName` | Selects samples for the intended EPP pool. |
 | `queueCapacity` | Normalizes an absolute queue count to `0.0..1.0`. |
-| `signalNames` | Maps Grid signals to exporter metric names. |
+| `signalNames` | Maps AGN signals to exporter metric names. |
 | `staleMetricsSeconds` | Grace period for reusing the last successful local scrape. |
 
-One `InferenceProvider` represents a schedulable pool. Grid does not rank the
+One `InferenceProvider` represents a schedulable pool. AGN does not rank the
 individual vLLM pods in that pool.
 
 ## Missing and Stale Metrics
@@ -168,7 +168,7 @@ back to neutral signal values (0.5 for ratio signals, `healthy = true`). This
 compatibility behavior means a provider with missing telemetry can score
 competitively with a provider under real pressure. For a provider configured
 with `metricsConfig.tls`, a failed scrape can reuse a successful sample only
-within `staleMetricsSeconds`; after that, Grid marks the provider unhealthy so
+within `staleMetricsSeconds`; after that, AGN marks the provider unhealthy so
 it is excluded from routing. Production deployments using `queueDepth` or
 `kvCachePressure` should ensure every competing provider exposes fresh,
 comparable telemetry for the selected signal. `noMetrics` does not require a
@@ -176,7 +176,7 @@ metrics endpoint.
 
 ## Current Limits
 
-- No request-specific prefix affinity at the Grid layer.
+- No request-specific prefix affinity at the AGN layer.
 - No independent remote metric sample timestamp yet.
 - Stabilized admission is available through `spec.admissionPolicy`; it uses
   bounded pressure/recovery counters and hold-down timers, while omitting the
@@ -188,6 +188,6 @@ metrics endpoint.
   expose comparable telemetry; use `noMetrics` for heterogeneous providers.
 - Strategy changes alter the overlay on the next successful reconciliation.
 
-See the [Grid Routing Guide](../routing.md) for the operator-facing policy and
+See the [AGN Routing Guide](../routing.md) for the operator-facing policy and
 selection model. See [Routing Architecture and Overlay Contract](routing.md)
 for candidate admission, stale-candidate retention, and overlay revision behavior.

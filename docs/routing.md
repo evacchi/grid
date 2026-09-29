@@ -1,6 +1,6 @@
-# Grid Routing Guide
+# AI Grid Network Routing Guide
 
-Grid routes inference traffic across provider gateways using a **multi-dimensional policy** rather than a single load-balancing algorithm. This guide starts with the routing outcome you want, then shows how policy, scoring, groups, affinity, and selection mode work together.
+AI Grid Network (AGN) routes inference traffic across provider gateways using a **multi-dimensional policy** rather than a single load-balancing algorithm. This guide starts with the routing outcome you want, then shows how policy, scoring, groups, affinity, and selection mode work together.
 
 The practical model is:
 
@@ -12,7 +12,7 @@ The practical model is:
 6. Forward the request to the selected provider gateway.
 7. Let the provider-local serving stack, such as llm-d/EPP, make any separate pod-level or replica-level decision.
 
-Grid makes control-plane decisions asynchronously and publishes a versioned routing overlay. Praxis loads that overlay and makes the final request-time provider choice locally. Grid, Kubernetes, Prometheus, and EPP are not consulted synchronously for every request.
+AGN makes control-plane decisions asynchronously and publishes a versioned routing overlay. Praxis loads that overlay and makes the final request-time provider choice locally. AGN, Kubernetes, Prometheus, and EPP are not consulted synchronously for every request.
 
 ```mermaid
 flowchart TD
@@ -51,7 +51,7 @@ The most important distinction is:
 | Prefer the provider with more free KV-cache capacity | `scoringPolicy.strategy: kvCachePressure` + usually `routingPolicy: scoreFirst` | Changes provider ranking based on provider-level KV-cache pressure. |
 | Stop new sessions going to a pressured provider | Stabilized admission plus a pressure signal | Moves pressured providers to `existing_only`; requires an active scoring strategy and matching provider metric signal. |
 | Keep an existing session on the same provider | Praxis AI `session_affinity` | Reuses the bound provider before running a new selection. |
-| Change routing without restarting Praxis | Grid overlay publication + Praxis overlay hot reload | Atomically replaces the accepted routing snapshot. |
+| Change routing without restarting Praxis | AGN overlay publication + Praxis overlay hot reload | Atomically replaces the accepted routing snapshot. |
 
 For the low-level overlay, revision, delivery, credential, and provider-hop contracts, see [Routing Architecture and Overlay Contract](architecture/routing.md).
 
@@ -112,7 +112,7 @@ Use this when the need is:
 `geographyFirst` orders candidates by admission, locality, freshness, score, and deterministic tie-breakers. Groups are separated by admission state, locality tier, and freshness; scores only order providers within a group.
 
 Upgrade note: omitting `selectionPolicy` means deterministic selection, but the
-first candidate can still change when Grid's ordering changes, including when
+first candidate can still change when AGN's ordering changes, including when
 freshness differs. If a fixed primary matters, set the policy explicitly and
 compare the rendered routing overlay before and after an upgrade.
 
@@ -177,7 +177,7 @@ This produces equal request selection across fresh admitted providers in the act
 - [Grid LLM-d Pool Metrics Demo](https://github.com/praxis-proxy/demos/tree/main/demos/grid-llmd-pool-metrics): uses `scoreFirst` so a better provider score can outrank locality.
 
 Experimental cloud-burst work explores explicit locality grouping. That work is
-not part of the stable GridNetwork API; use the stable `routingPolicy` values
+not part of the stable `GridNetwork` API; use the stable `routingPolicy` values
 documented here for mainline deployments. See the
 [experimental cloud-burst demo](https://github.com/praxis-proxy/experimental/tree/main/demos/grid-cloud-burst)
 for its current status and requirements.
@@ -190,14 +190,14 @@ Use this when the need is:
 
 > Always send a new request to the highest-ranked eligible provider.
 
-Deterministic mode selects the first provider after Grid has ordered the active group.
+Deterministic mode selects the first provider after AGN has ordered the active group.
 
 ```mermaid
 flowchart LR
-    Grid["Grid ordered active group"]
-    Grid --> A["1. Provider A"]
-    Grid --> B["2. Provider B"]
-    Grid --> C["3. Provider C"]
+    Agn["AGN-ordered active group"]
+    Agn --> A["1. Provider A"]
+    Agn --> B["2. Provider B"]
+    Agn --> C["3. Provider C"]
     Request["New request"] --> Pick["deterministic"]
     Pick --> A
 ```
@@ -220,7 +220,7 @@ spec:
 This is useful for:
 
 - strict primary/preferred provider behavior;
-- making Grid's score/order directly determine the selected provider;
+- making AGN's score/order directly determine the selected provider;
 - predictable primary/fallback behavior.
 
 A particularly useful combination for load-sensitive preference is:
@@ -239,7 +239,7 @@ spec:
   metricsRefreshInterval: "10s"
 ```
 
-Grid asynchronously ranks the provider pools. Praxis then chooses the first provider from the accepted snapshot. Praxis does not query EPP during the request.
+AGN asynchronously ranks the provider pools. Praxis then chooses the first provider from the accepted snapshot. Praxis does not query EPP during the request.
 
 **Demo coverage:** deterministic selection is a supported mode, but the current demo set does not have a demo whose sole purpose is deterministic selection. The load-aware metrics demo is useful for understanding the ranking input that deterministic mode can consume.
 
@@ -400,7 +400,7 @@ Provider B and C would use their own `capacityWeight` values.
 Important behaviors:
 
 - `capacityWeight` accepts integers from `1` through `1000` and defaults to
-  `1` when omitted. Grid copies it directly to the overlay's relative
+  `1` when omitted. AGN copies it directly to the overlay's relative
   `traffic_weight`; it does not normalize the value or convert it to a
   percentage.
 - Static weighted selection does not derive weight from a score.
@@ -432,7 +432,7 @@ Use this when the need is:
 
 There is **not** a `selectionPolicy.mode: loadAware`.
 
-Load awareness is a separate scoring dimension. Mainline Grid currently exposes provider-level scoring strategies such as:
+Load awareness is a separate scoring dimension. Mainline AGN currently exposes provider-level scoring strategies such as:
 
 - `queueDepth`
 - `kvCachePressure`
@@ -441,8 +441,8 @@ The scoring strategy changes provider score/order. The selection mode still dete
 
 ```mermaid
 flowchart LR
-    Metrics["EPP/provider metrics"] --> Grid["Grid scoring"]
-    Grid --> Rank["Provider order/rank"]
+    Metrics["EPP/provider metrics"] --> AGN["AGN scoring"]
+    AGN --> Rank["Provider order/rank"]
     Rank --> Groups["Selection groups"]
     Groups --> Picker["deterministic / RR / random / weighted"]
 ```
@@ -473,7 +473,7 @@ partial `InferenceProvider.spec.metricsConfig` fragment:
 The metric names below are an example mapping, not a universal llm-d metric
 contract. Check the deployed exporter's `/metrics` output and configure the
 exact names and pool labels it exposes. Names vary between scheduler versions
-and metric adapters; a wrong name can leave Grid without the selected signal.
+and metric adapters; a wrong name can leave AGN without the selected signal.
 
 ```yaml
 spec:
@@ -635,7 +635,7 @@ flowchart TD
     Select --> Bind["Record successful binding"]
 ```
 
-Session affinity belongs to the Praxis AI `intelligent_route` request-time configuration rather than the Grid scoring policy.
+Session affinity belongs to the Praxis AI `intelligent_route` request-time configuration rather than the AGN scoring policy.
 
 Example using a header:
 
@@ -699,8 +699,8 @@ Conceptually:
 | `existing_only` | no | yes, when permitted |
 | `none` | no; removed from eligible candidates | no |
 
-Current Grid removes excluded providers before publishing its overlay. The
-`none` value remains part of the generic Praxis overlay contract; Grid does not
+Current AGN removes excluded providers before publishing its overlay. The
+`none` value remains part of the generic Praxis overlay contract; AGN does not
 emit it for excluded candidates today.
 
 Neither a high score nor a high static weight can make an excluded provider eligible.
@@ -718,7 +718,7 @@ stateDiagram-v2
 Selection groups turn this admission behavior into structured failover.
 
 To opt into stabilized admission for configured metrics, set the policy
-explicitly. If `pressure` is omitted, Grid uses the six values shown below as
+explicitly. If `pressure` is omitted, AGN uses the six values shown below as
 defaults. If `pressure` is supplied, all six fields are required; durations
 must be positive whole seconds (for example, `10s`). This example sets them
 explicitly so the transition behavior is reviewable:
@@ -762,24 +762,24 @@ spec:
 ```
 
 `missingMetrics` can instead be `excluded`. When `admissionPolicy` is omitted,
-Grid retains its instantaneous compatibility behavior. Hard health failure
+AGN retains its instantaneous compatibility behavior. Hard health failure
 still excludes a provider immediately; pressure hysteresis controls the
 admission transition for otherwise healthy providers.
 
 For pressure observations, also configure `scoringPolicy.strategy` on the
-GridNetwork and the matching signal name in every participating provider's
+`GridNetwork` and the matching signal name in every participating provider's
 `metricsConfig.signalNames`, with a reachable metrics endpoint. For raw queue
 counts, set `queueCapacity` to normalize the value. For KV-cache pressure, map
 `kvCacheUtilization`. Without an active strategy and matching provider signal,
-Grid treats admission as not configured and leaves otherwise healthy
+AGN treats admission as not configured and leaves otherwise healthy
 providers `new_and_existing`; the thresholds above alone do not enable
 load-aware admission.
 
 Example:
 
 ```text
-Group 0: local Grid providers
-Group 1: remote Grid providers
+Group 0: local AGN providers
+Group 1: remote AGN providers
 Group 2: external providers
 ```
 
@@ -805,23 +805,23 @@ configured separately.
 
 Use this when the need is:
 
-> Change routing state without restarting Praxis or putting Grid in the request path.
+> Change routing state without restarting Praxis or putting AGN in the request path.
 
-Grid publishes a new content-addressed overlay when provider state, configuration, metrics, or remote Grid state changes.
+AGN publishes a new content-addressed overlay when provider state, configuration, metrics, or remote site state changes.
 
 Praxis validates the new overlay and atomically swaps the accepted in-memory snapshot.
 
 ```mermaid
 flowchart LR
     Change["Provider/config/metric change"]
-    Grid["Grid reconcile"]
+    AGN["AGN reconcile"]
     Overlay["New overlay revision"]
     Delivery["ConfigMap / overlay-sync"]
     Praxis["Praxis validation"]
     Swap["Atomic snapshot swap"]
     Request["Next new request"]
 
-    Change --> Grid --> Overlay --> Delivery --> Praxis --> Swap --> Request
+    Change --> AGN --> Overlay --> Delivery --> Praxis --> Swap --> Request
 ```
 
 Praxis AI overlay mode:
@@ -1028,7 +1028,7 @@ Best demonstration:
 
 The demos are runnable examples of the routing model. Check each demo's pinned
 sources, prerequisites, and qualification results before treating it as release
-evidence; experimental demos can require APIs absent from mainline Grid.
+evidence; experimental demos can require APIs absent from mainline AGN.
 
 | Demo | Repository | Routing behavior it demonstrates |
 |---|---|---|
@@ -1036,18 +1036,18 @@ evidence; experimental demos can require APIs absent from mainline Grid.
 | `grid-weighted-dynamic-routing` | [experimental](https://github.com/praxis-proxy/experimental/tree/main/demos/grid-weighted-dynamic-routing) | Static weighted random, three-provider proportional selection, hot reload, and experimental pressure-driven dynamic weights. |
 | `grid-distributed-token-rate-limit` | [experimental](https://github.com/praxis-proxy/experimental/tree/main/demos/grid-distributed-token-rate-limit) | Round-robin provider selection after quota admission; request-time routing remains local to Praxis. |
 | `grid-llmd-pool-metrics` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-llmd-pool-metrics) | `queueDepth`, `kvCachePressure`, `scoreFirst`, dynamic provider re-ranking, pressure and recovery. |
-| `grid-glb-demo` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-glb-demo) | Session affinity, provider withdrawal/recovery, hot reload, and separation of edge selection from Grid provider selection. |
+| `grid-glb-demo` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-glb-demo) | Session affinity, provider withdrawal/recovery, hot reload, and separation of edge selection from AGN provider selection. |
 | `grid-combined-site` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-combined-site) | Local-first routing, remote fallback, existing-session behavior, and recovery. |
 | `grid-workload-inference` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-workload-inference) | Workload-originated local-first routing, health-based failover, and recovery. |
-| `grid-route53-edge-entry` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-route53-edge-entry) | Independent public-edge selection and private Grid provider selection; useful for understanding routing-layer composition. |
+| `grid-route53-edge-entry` | [demos](https://github.com/praxis-proxy/demos/tree/main/demos/grid-route53-edge-entry) | Independent public-edge selection and private AGN provider selection; useful for understanding routing-layer composition. |
 
 ---
 
-# 13. What Grid routing does not mean
+# 13. What AGN routing does not mean
 
-## Grid provider selection is not llm-d pod selection
+## AGN provider selection is not llm-d pod selection
 
-Grid selects a provider gateway/pool.
+AGN selects a provider gateway/pool.
 
 The provider-local serving stack can then independently choose a concrete inference endpoint or replica.
 
@@ -1056,7 +1056,7 @@ Client
   |
 Praxis consumer
   |
-Grid/Praxis provider selection
+AGN/Praxis provider selection
   |
 Praxis provider gateway
   |
@@ -1109,11 +1109,11 @@ Its validated cloud transition is currently hard/group fallback, not a claim of 
 
 # 14. Control plane versus request path
 
-Grid and Praxis intentionally split responsibilities.
+AGN and Praxis intentionally split responsibilities.
 
 ```mermaid
 flowchart LR
-    subgraph Control["Grid control plane"]
+    subgraph Control["AGN control plane"]
         Observe["Observe provider/site state"]
         Score["Score + admit + group"]
         Publish["Publish versioned overlay"]
@@ -1132,7 +1132,7 @@ flowchart LR
     Publish -. "async delivery" .-> Load
 ```
 
-**Grid owns:**
+**AGN owns:**
 
 - provider and site discovery;
 - provider eligibility and admission;
@@ -1163,10 +1163,10 @@ The result is that sophisticated routing policy can change asynchronously withou
 
 # References
 
-Grid:
+AGN:
 
 - [Grid repository](https://github.com/praxis-proxy/grid)
-- [Grid documentation index](README.md)
+- [AGN documentation index](README.md)
 - [Routing Architecture and Overlay Contract](architecture/routing.md)
 - [Provider Scoring](architecture/scoring.md)
 - [CRD Reference](architecture/crds.md)

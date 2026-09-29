@@ -1,6 +1,6 @@
 # grid-workload-inference — Internal E2E Topology
 
-Internal test fixture for the Grid workload-inference E2E scenario.
+Internal test topology for the AGN workload-inference E2E scenario.
 
 This topology reuses the `grid-glb-demo` Forge configuration with the
 `--no-ingress` flag, which strips the GTM emulator cluster and produces
@@ -28,5 +28,5 @@ The reused GLB configuration defaults to
 
 ## Public quickstarts
 
-User-facing Grid demos with full documentation are maintained in the
+User-facing demos with full documentation are maintained in the
 [Praxis demos repository](https://github.com/praxis-proxy/demos).

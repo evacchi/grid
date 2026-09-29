@@ -1,6 +1,6 @@
 # CI Kind E2E Implementation
 
-This document describes the CI coverage for Grid's Kind-based end-to-end
+This document describes the CI coverage for AGN's Kind-based end-to-end
 validation suite.
 
 ## Validation tiers
@@ -30,7 +30,7 @@ Sequence:
 ## Single-cluster multi-gateway coverage
 
 The `run-grid-single-cluster-multi-gateway-qualification` command uses one Kind
-cluster, one Grid operator, one GridNetwork, and one GridSite named `single`, with
+cluster, one AGN Operator, one GridNetwork, and one GridSite named `single`, with
 two consumer gateways and three provider gateways. It is distinct from both a
 single gateway smoke test and the multi-cluster provider-traffic qualification:
 the single-cluster test shares one site, Kubernetes control plane, and overlay
@@ -80,8 +80,8 @@ CI runners require:
 - Gateway and mock-provider images available to Kind
 - Permission to create and delete local Kind clusters
 
-The gateway image must include the Grid data-plane filters required by the
-validation suite.  CI consumes a reviewed, published image rather than building
+The Praxis AI gateway image must include the data-plane filters required for
+AGN routing and by the validation suite. CI consumes a reviewed, published image rather than building
 an unpinned image during the test job.
 
 ## Flake controls
@@ -112,7 +112,7 @@ rerun.
 
 The full multi-cluster suite requires:
 
-- A reviewed gateway image with the required Grid data-plane filters must be
+- A reviewed Praxis AI gateway image with the required routing filters must be
   published and referenced by CI.
 - Kind cluster names must be either isolated per-job or the suite must run
   serially on a single runner.

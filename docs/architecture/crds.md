@@ -2,11 +2,15 @@
 
 API group: `grid.praxis-proxy.io/v1alpha1`
 
+The AI Grid Network (AGN) Operator defines these resources to describe sites,
+provider capacity, and routing policy. The established API identities remain
+unchanged by the project-name update.
+
 All CRDs are cluster-scoped.
 
 ## GridNetwork
 
-The grid itself. Top-level tenancy scope. A single
+The AGN logical network and top-level tenancy scope. A single
 cluster can host multiple `GridNetworks` for
 multi-tenancy.
 
@@ -66,7 +70,7 @@ spec:
 
 These optional `GridNetwork.spec` fields control provider ordering, admission,
 and request selection. For guidance on composing them to achieve a routing
-behavior, see the [Grid Routing Guide](../routing.md).
+behavior, see the [AGN Routing Guide](../routing.md).
 
 | Field | Supported values / shape | Default and interaction |
 |---|---|---|
@@ -99,7 +103,7 @@ render/apply attempt.
 ### Tenant budget tracking
 
 `budgetPolicy.tenants[]` opts individual tenants into cumulative spend
-tracking. Grid merges each site's locally recorded spend for a tenant into a
+tracking. AGN merges each site's locally recorded spend for a tenant into a
 per-tenant CRDT counter (a `GCounter`, one slot per originating site) that is
 gossiped over SWIM alongside provider state, so the reported total reflects
 spend recorded anywhere in the grid, not just the local site.
@@ -111,7 +115,7 @@ For every tenant declared in `budgetPolicy`, `budgetStatus[]` reports:
 - `spendUsd` — the converged cross-site total, in USD
 - `spendRatio` — `spendUsd / capUsd`, for at-a-glance dashboarding
 
-`budgetStatus[]` is a status **signal only**. Grid does not itself degrade or
+`budgetStatus[]` is a status **signal only**. AGN does not itself degrade or
 reject traffic when a tenant's `spendRatio` reaches or exceeds `1.0` — that
 enforcement decision is expected to live in a gateway-side policy filter
 (cross-repo, `praxis-ai`), the same split used for `provider_route`
@@ -266,7 +270,7 @@ cloud-provider fallback routes.  For remote provider sites, provider credentials
 should be mounted only in the remote site or provider-side component that makes
 the final backend call.
 
-The `credential_inject` filter is a Praxis AI runtime dependency.  The Grid
+The `credential_inject` filter is a Praxis AI runtime dependency. The AGN
 operator can render the config shape, but the deployed Praxis AI image must
 include that filter for the generated config to start successfully.
 
@@ -314,7 +318,7 @@ SWIM discovery, authentication, and authorization are separate concerns:
 - Authentication proves the peer gateway identity, normally through mTLS
   certificate validation.
 - Authorization decides whether that authenticated peer is allowed to
-  participate in the Grid or carry traffic for a given policy scope.
+  participate in the AI Grid Network or carry traffic for a given policy scope.
 
 A discovered SWIM peer is not automatically authorized for routing.
 
@@ -341,7 +345,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 | `PlaintextUnreachable` | Connecting or Unreachable | TCP probe failed (explicit Plaintext mode) |
 | `ConnectTimeout` / `ConnectionFailed` | Connecting or Unreachable | TCP connection timed out or failed |
 | `HandshakeTimeout` / `TlsProtocolError` | Connecting | TLS handshake timed out or failed |
-| `UntrustedIssuer` | Connecting | Server certificate does not chain to the configured Grid trust root |
+| `UntrustedIssuer` | Connecting | Server certificate does not chain to the configured AGN trust root |
 | `IdentityMismatch` | Connecting | Server SAN does not match configured `serverName` |
 | `CertificateExpired` / `CertificateNotYetValid` | Connecting | Server certificate is outside its validity period |
 | `PinMismatch` | Connecting | Canonical fingerprint does not match a configured pin |
@@ -416,7 +420,7 @@ Provider records from a peer whose `GridSite` is in `Discovered`, `Connecting`, 
 `Unreachable`, or `Left` are excluded from the routing overlay. Records from a peer with
 no matching `GridSite` are also excluded (fail-closed).
 
-GridSite Active is a control-plane eligibility signal. It means Grid has enough
+GridSite Active is a control-plane eligibility signal. It means AGN has enough
 site/trust information to consider the site for overlay generation. It does not
 prove that a Praxis gateway has loaded the latest routing config or authorized
 provider-side traffic. Data-plane readiness is verified separately at request
@@ -527,10 +531,10 @@ spec:
     matchLabels: {}
 ```
 
-This external API example intentionally omits `healthCheck`: Grid probes health
+This external API example intentionally omits `healthCheck`: AGN probes health
 with an unauthenticated HTTP `GET`, which is not the provider's authenticated
 inference API. It also omits metrics scraping because the external API does not
-provide the provider-pool metrics used by Grid scoring. The referenced
+provide the provider-pool metrics used by AGN scoring. The referenced
 `openai-token` Secret must exist in `praxis-system` before controller-managed
 credential projection can become available.
 
@@ -539,7 +543,7 @@ credential projection can become available.
 `spec.capacityWeight` is an optional positive relative provider capacity from
 `1` through `1000`, used only with `GridNetwork.spec.selectionPolicy.mode:
 weightedRandom` and `placementPolicy.strategy: static`. If omitted, the
-effective weight is `1`. Grid copies this value to the overlay's
+effective weight is `1`. AGN copies this value to the overlay's
 `traffic_weight`; it does not represent a percentage.
 
 ### Backend kind
@@ -549,7 +553,7 @@ effective weight is `1`. Grid copies this value to the overlay's
 | Value | Meaning |
 |-------|---------|
 | `local` | Self-hosted capacity in the local site. |
-| `remote` | Self-hosted capacity in another Grid site. |
+| `remote` | Self-hosted capacity in another AGN site. |
 | `cloud_managed` | Managed cloud capacity controlled by the operator's cloud account. |
 | `api_provider` | External API/SaaS provider used as fallback or explicit API route. |
 
@@ -558,7 +562,7 @@ transport implementation; for example, a `cloud_managed` backend can still be
 fronted by Praxis.
 
 The current CRD schema represents `backendKind` as a string rather than an
-enum. The four values above are the categories Grid recognizes for routing and
+enum. The four values above are the categories AGN recognizes for routing and
 scoring conversion; an unrecognized value is not converted into a normal
 scoring candidate. Use a listed value unless the implementation is extended.
 
@@ -698,7 +702,7 @@ metricsConfig:
 
 #### Queue depth normalization
 
-Grid does not normalize raw queue counts. Exporters should publish
+AGN does not normalize raw queue counts. Exporters should publish
 `queueDepth` as a normalized `0.0`–`1.0` gauge before the operator scrapes it.
 
 ## AgentToolProvider

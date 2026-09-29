@@ -1,6 +1,6 @@
 # grid-glb-demo — Internal E2E Topology
 
-Internal test fixture for the Grid global-ingress E2E scenario.
+Internal test topology for the AGN global-ingress E2E scenario.
 
 ## xtask command
 
@@ -38,5 +38,5 @@ contains [`provider_route`](https://github.com/praxis-proxy/ai/pull/386).
 
 ## Public quickstarts
 
-User-facing Grid demos with full documentation are maintained in the
+User-facing demos with full documentation are maintained in the
 [Praxis demos repository](https://github.com/praxis-proxy/demos).

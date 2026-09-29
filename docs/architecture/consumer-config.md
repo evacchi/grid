@@ -1,6 +1,6 @@
 # Operator-Generated Consumer Config
 
-The Grid operator can generate the consumer Praxis `ConfigMap` from routing overlay
+The AGN Operator can generate the consumer Praxis `ConfigMap` from routing overlay
 data.  This is an opt-in feature on each `GatewayRef`.
 
 ## Migration: `clusterEndpoints` transport shape change
@@ -78,7 +78,7 @@ provider sites follow the same SecretRef contract, but the provider credential
 should be mounted only where the final backend call is made.
 
 The generated config requires a Praxis AI image that contains the
-`credential_inject` filter.  Grid can render the config and project
+`credential_inject` filter. AGN can render the config and project
 credential references today; deployments must ensure the selected Praxis AI image
 includes the matching request-time filter.
 

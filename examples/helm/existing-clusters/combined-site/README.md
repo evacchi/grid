@@ -5,13 +5,13 @@ Deployments with separate Services, TLS identities, and Secret mounts.
 
 ```text
 east-a cluster                         east-b cluster
-  Grid operator                          Grid operator
+  AGN Operator                           AGN Operator
   consumer gateway (port 8080)           consumer gateway (port 8080)
   provider gateway (port 8443)           provider gateway (port 8443)
   inference backend                      inference backend
 
 west-a cluster                         west-b cluster
-  Grid operator                          Grid operator
+  AGN Operator                           AGN Operator
   consumer gateway (port 8080)           consumer gateway (port 8080)
   provider gateway (port 8443)           provider gateway (port 8443)
   inference backend                      inference backend
@@ -38,7 +38,7 @@ Each site has five values files:
 | `<site>-provider-gateway.yaml` | `praxis-gateway` | Provider role, credentials, port 8443 |
 
 The operator discovers the consumer gateway for routing overlay
-delivery. Grid topology CRs and mock inference backends are
+delivery. AGN topology CRs and mock inference backends are
 managed by their own Helm releases for lifecycle independence.
 
 ## Installation
@@ -62,7 +62,7 @@ backends must exist before the operator can produce the overlay
 that the consumer mounts:
 
 ```bash
-# 1. Grid operator (installs CRDs)
+# 1. AGN Operator (installs CRDs)
 helm upgrade --install grid-operator ../../../../charts/grid-operator \
   --kube-context "$EAST_A_CONTEXT" \
   --namespace grid-system --create-namespace \
@@ -74,7 +74,7 @@ helm upgrade --install grid-mock-providers ../../../../charts/grid-mock-provider
   --namespace grid-system \
   --values values/east-a-grid-mock-providers.yaml
 
-# 3. Grid site topology CRs
+# 3. AGN site topology CRs
 helm upgrade --install grid-site ../../../../charts/grid-site \
   --kube-context "$EAST_A_CONTEXT" \
   --namespace grid-system \

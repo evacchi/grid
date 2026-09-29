@@ -5,7 +5,7 @@ west consumers backed by the same Valkey namespace and Alice rule. Their filter
 order is intentional:
 
 ```text
-Basic Auth -> model extraction -> token reservation -> Grid routing
+Basic Auth -> model extraction -> token reservation -> AGN routing
            -> provider request -> token counting -> quota settlement
 ```
 

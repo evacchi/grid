@@ -1,4 +1,4 @@
-# Grid Documentation
+# AI Grid Network (AGN) Documentation
 
 ## Routing
 
@@ -20,7 +20,7 @@
 - [Consumer Config](architecture/consumer-config.md) — operator-generated
   consumer Praxis `ConfigMap` and the `GatewayRef.consumerConfig` API.
 - [External Client Ingress](architecture/external-ingress.md) — GTM/GLB edge
-  selection, Grid provider routing, trust boundaries, affinity, snapshot
+  selection, AGN provider routing, trust boundaries, affinity, snapshot
   delivery, and provider-boundary ownership.
 
 ## Operations
@@ -34,13 +34,10 @@
 
 ## Examples
 
-- [Example Scenarios 2026](examples-2026.md) - progressive scenarios covering
-  multi-cluster routing, provider fallback, load balancing, affinity, policy,
-  discovery, federation, and partition handling.
 - [Provider Traffic Selection](../tests/e2e/topologies/grid-provider-traffic/README.md) —
-  runnable three-cluster topology for Grid selection groups and request-time
+  runnable three-cluster topology for AGN selection groups and request-time
   round-robin provider choice.
-- [Grid QuickStarts](https://github.com/praxis-proxy/demos) — deployable
+- [Praxis demos](https://github.com/praxis-proxy/demos): deployable
   examples with automated runtime proofs of routing, failover, security
   boundaries, and provider lifecycle.
 
@@ -69,7 +66,7 @@ image preparation, execution, evidence, and cleanup.
 ## Installation
 
 - [Existing-Cluster Helm Installation](installation/existing-clusters.md) —
-  install Grid and Praxis on running Kubernetes clusters with Helm.
+  install AGN and Praxis on running Kubernetes clusters with Helm.
 
 ## Development
 

@@ -1,10 +1,10 @@
-# Grid Deployment Manifests
+# AI Grid Network Deployment Manifests
 
-This directory contains deployment manifests for the Grid operator.
+This directory contains deployment manifests for the `grid-operator` workload.
 
 ## Scope
 
-This directory installs the Grid operator and CRDs.
+This directory installs `grid-operator` and its CRDs.
 It does **not** install or manage:
 
 - Kind clusters or multi-cluster orchestration
@@ -20,7 +20,7 @@ direction as a separate `praxis-forge` CLI.
 ## Directory Structure
 
 - `crds/` - Custom Resource Definitions (auto-generated)
-- `operator/` - Grid operator deployment manifests
+- `operator/` - `grid-operator` deployment manifests
 - `examples/` - Example resource configurations (also see `../config/samples/`)
 
 ## CRDs
@@ -94,15 +94,15 @@ For production, use a versioned release tag or immutable digest.
 
 ## Praxis AI Gateway Deployment
 
-**Important**: Grid only deploys the operator and CRDs. Praxis AI gateway deployment is separate and requires:
+**Important**: AGN only deploys the operator and CRDs. Praxis AI gateway deployment is separate and requires:
 
 1. Praxis AI image with required filters (`intelligent_route`, `credential_inject`)
-2. Consumer gateway configuration referencing Grid-generated ConfigMaps
-3. Provider gateway deployment with Grid-compatible endpoints
+2. Consumer gateway configuration referencing AGN-generated ConfigMaps
+3. Provider gateway deployment with AGN-compatible endpoints
 
 ## Container Images
 
-Grid operator image builds use a multi-stage Containerfile:
+The `grid-operator` image is built with a multi-stage Containerfile:
 
 - **Build stage**: `rust:1.96-alpine` copies the whole workspace (`COPY . .`)
   and runs one `cargo build` for the operator, with BuildKit cache mounts on the

@@ -1,7 +1,7 @@
-# Grid Operator Helm Chart
+# grid-operator Helm Chart
 
-Helm chart for the Grid operator, a multi-site AI inference routing controller
-for Kubernetes.
+Helm chart for deploying the `grid-operator` multi-site AI inference routing
+controller on Kubernetes.
 
 ## Prerequisites
 
@@ -41,9 +41,9 @@ helm install grid-operator charts/grid-operator \
 
 The chart follows [Semantic Versioning](https://semver.org/). In
 `Chart.yaml`, `version` identifies the Helm chart package and `appVersion`
-identifies the default Grid operator image. The two versions may advance
-independently, but Grid releases keep them aligned when the chart and operator
-ship together.
+identifies the default `ghcr.io/praxis-proxy/grid-operator` image. The two
+versions may advance independently, but Grid releases keep them aligned when
+the chart and operator ship together.
 
 ## Verify
 

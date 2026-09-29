@@ -8,7 +8,7 @@ See the canonical guide at [docs/installation/existing-clusters.md](../../../doc
 inventory.example.yaml    Example inventory (copy, fill, do not commit)
 scripts/
   preflight.sh            Validate prerequisites and inventory
-  install.sh              Install Grid + Praxis on all clusters
+  install.sh              Install AGN + Praxis on all clusters
   verify.sh               Run post-install verification
   uninstall.sh            Clean up Helm releases
 combined-site/

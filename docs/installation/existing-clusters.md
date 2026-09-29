@@ -1,6 +1,6 @@
 # Existing-Cluster Helm Installation
 
-This Helm-based installation workflow installs the Grid Operator and Praxis
+This Helm-based installation workflow installs the AGN Operator and Praxis
 gateways on existing Kubernetes clusters. Two topology layouts use the
 same charts and installer scripts. The workflow has been validated through
 chart rendering, disposable local clusters, and existing single-node
@@ -10,7 +10,7 @@ Kubernetes clusters.
 
 - **[Adding an Inference Provider](../adding-provider.md)** —
   step-by-step workflow for adding in-cluster, existing-service, or
-  external HTTPS providers to a running Grid installation.
+  external HTTPS providers to a running AGN installation.
 
 ## Topologies
 
@@ -66,11 +66,11 @@ Before running the installer, prepare the following in each cluster's
 | `provider-tls` Secret | user-managed | TLS certificate and key for provider identity |
 | Per-provider credential Secrets | user-managed | One Secret per inference provider backend |
 
-Grid topology CRs (GridNetwork, GridSite, InferenceProvider) and mock
+AGN topology CRs (`GridNetwork`, `GridSite`, `InferenceProvider`) and mock
 inference backends are now managed by the `grid-site` and
 `grid-mock-providers` Helm charts respectively.
 
-The routing overlay ConfigMap is created automatically by the Grid
+The routing overlay ConfigMap is created automatically by the AGN
 Operator once SWIM membership converges. Its name follows the pattern
 `grid-overlay-{network}-{gateway}`, where `{network}` is the
 GridNetwork CR name and `{gateway}` is the consumer gateway Service
@@ -83,7 +83,7 @@ the Helm release name).
 # Verify prerequisites
 examples/helm/existing-clusters/scripts/preflight.sh inventory.yaml
 
-# Install Grid + Praxis on all clusters
+# Install AGN + Praxis on all clusters
 examples/helm/existing-clusters/scripts/install.sh inventory.yaml
 
 # Install with per-site overrides
@@ -187,8 +187,8 @@ install between the operator and gateways.
 
 Both topologies use the same charts:
 
-- `charts/grid-operator` -- Grid Operator with SWIM, CRD management
-- `charts/grid-site` -- Grid topology CRs (GridNetwork, GridSite, InferenceProvider)
+- `charts/grid-operator` -- AGN Operator with SWIM, CRD management
+- `charts/grid-site` -- AGN topology CRs (`GridNetwork`, `GridSite`, `InferenceProvider`)
 - `charts/grid-mock-providers` -- Mock inference backends, Services, NetworkPolicy
 - `charts/praxis-gateway` -- Praxis AI Gateway (consumer or provider role)
 
@@ -561,7 +561,7 @@ candidate ID:
 ### NetworkPolicy for Multiple Backends
 
 The NetworkPolicy must allow ingress from **both** the provider gateway
-and the grid operator. The operator probes each InferenceProvider's
+and the AGN Operator. The operator probes each InferenceProvider's
 `spec.endpoint` for health checks — if blocked, the provider stays
 `Unavailable` and the overlay has no candidates:
 
@@ -673,8 +673,8 @@ imagePullSecrets:
 
 ### Service Names
 
-Set `fullnameOverride` to control the exact Service name. The Grid
-Operator's `gateway.serviceName` must match:
+Set `fullnameOverride` to control the exact Service name. The AGN Operator's
+`gateway.serviceName` must match:
 
 ```yaml
 # consumer-gateway-overrides.yaml
@@ -918,7 +918,7 @@ the mock-inference Deployment.
 **Symptom:** Both InferenceProviders show `phase: Unavailable`; overlay
 has no candidates; consumer gateway returns 503.
 
-**Cause:** A NetworkPolicy blocks the grid operator from reaching the
+**Cause:** A NetworkPolicy blocks the AGN Operator from reaching the
 mock backend health endpoint. The operator must probe each
 InferenceProvider's `spec.endpoint` — if the health check fails, the
 provider stays Unavailable and is excluded from the overlay.
@@ -949,11 +949,11 @@ Never rely on the default context. Pass `--context` to manual
 ## Requirements
 
 - Helm 3.12+
-- Grid operator image v0.1.1+ (the Helm chart requires `/healthz` and `/readyz`
+- `grid-operator` image v0.1.1+ (the Helm chart requires `/healthz` and `/readyz`
   health endpoints on the metrics port; v0.1.0 images lack these endpoints and
   will fail liveness probes)
 - kubectl configured with contexts for all clusters
 - Inter-cluster connectivity between SWIM ports
 - TLS certificates and provider credentials prepared out-of-band
 - Praxis gateway configuration ConfigMaps created in each cluster
-- Grid custom resources applied to each cluster
+- AGN custom resources applied to each cluster

@@ -1,6 +1,6 @@
 # grid-llmd-pool-metrics — Deterministic llm-d pool-metrics qualification
 
-Internal test fixture for the Grid llm-d pool-metrics E2E scenario.
+Internal test topology for the AGN llm-d pool-metrics E2E scenario.
 
 ## xtask command
 
@@ -17,7 +17,7 @@ simulator pods, so a restart cannot lose the requested value. The deterministic
 state sequence is `0 -> 9 -> 0` for queue depth and `0.0 -> 0.95 -> 0.0`
 for KV-cache pressure.
 
-Grid still performs real EPP metric scraping, score/rank computation, overlay
+AGN still performs real EPP metric scraping, score/rank computation, overlay
 publication, overlay-sync projection, Praxis configuration loading, and
 request routing. It does not generate pressure by sending request floods; the
 separate real EPP/VCR smoke coverage remains useful for availability and
@@ -51,5 +51,5 @@ by this topology. For local development, set
 
 ## Public quickstarts
 
-User-facing Grid demos with full documentation are maintained in the
+User-facing demos with full documentation are maintained in the
 [Praxis demos repository](https://github.com/praxis-proxy/demos).

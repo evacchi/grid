@@ -3,7 +3,7 @@
 This directory owns the consumer-gateway and provider-gateway Praxis
 configuration used by the combined-site demo.
 
-Consumer configuration must contain the Grid-managed routing overlay mount and
+Consumer configuration must contain the AGN-managed routing overlay mount and
 must not contain provider credentials. Provider configuration must enforce
 mTLS peer identity, provider-route authorization, and final-hop credential
 injection before forwarding to a private inference endpoint.

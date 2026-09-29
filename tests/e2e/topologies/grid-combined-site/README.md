@@ -1,6 +1,6 @@
 # grid-combined-site — Internal E2E Topology
 
-Internal test fixture for the Grid combined-site E2E scenario.
+Internal test topology for the AGN combined-site E2E scenario.
 
 ## xtask command
 
@@ -28,5 +28,5 @@ filters used by this topology. For local development, set
 
 ## Public quickstarts
 
-User-facing Grid demos with full documentation are maintained in the
+User-facing AGN demos with full documentation are maintained in the
 [Praxis demos repository](https://github.com/praxis-proxy/demos).

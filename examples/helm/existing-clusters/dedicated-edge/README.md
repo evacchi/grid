@@ -6,27 +6,27 @@ alongside inference backends.
 
 ```text
 east-consumer                       west-consumer
-  Grid Operator                       Grid Operator
+  AGN Operator                        AGN Operator
   Praxis consumer gateway             Praxis consumer gateway
            |                                   |
-           +-------- Grid selection -----------+
+           +--------- AGN selection -----------+
                        |             |
                        v             v
 east-provider                       west-provider
-  Grid Operator                       Grid Operator
+  AGN Operator                        AGN Operator
   Praxis provider gateway             Praxis provider gateway
   inference backend                   inference backend
 ```
 
 ## Values Files
 
-- `values/east-consumer-operator.yaml` -- Grid Operator for the east consumer site
+- `values/east-consumer-operator.yaml` -- AGN Operator for the east consumer site
 - `values/east-consumer-gateway.yaml` -- Praxis consumer gateway
-- `values/west-consumer-operator.yaml` -- Grid Operator for the west consumer site
+- `values/west-consumer-operator.yaml` -- AGN Operator for the west consumer site
 - `values/west-consumer-gateway.yaml` -- Praxis consumer gateway
-- `values/east-provider-operator.yaml` -- Grid Operator for the east provider site
+- `values/east-provider-operator.yaml` -- AGN Operator for the east provider site
 - `values/east-provider-gateway.yaml` -- Praxis provider gateway
-- `values/west-provider-operator.yaml` -- Grid Operator for the west provider site
+- `values/west-provider-operator.yaml` -- AGN Operator for the west provider site
 - `values/west-provider-gateway.yaml` -- Praxis provider gateway
 
 ## Security

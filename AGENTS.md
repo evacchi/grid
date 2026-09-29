@@ -11,17 +11,17 @@ for the change.
 
 ## What This Is
 
-The AI Grid: a distributed, peer-to-peer network
+AI Grid Network (AGN): a distributed, peer-to-peer network
 for AI inference routing and agentic networking
 across clusters, cloud providers, and third-party
-APIs. The Grid Operator orchestrates mesh formation,
+APIs. The AGN Operator (`grid-operator`) orchestrates mesh formation,
 trust, capability discovery, and routing - while
 Praxis AI (from `../ai/`) handles all data-plane
 traffic as the gateway.
 
 ## Architecture
 
-The Grid Operator is an orchestration daemon, NOT a
+The AGN Operator is an orchestration daemon, NOT a
 proxy. It manages:
 
 - SWIM membership via `foca` (peer discovery)

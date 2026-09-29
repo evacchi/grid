@@ -1,18 +1,18 @@
 # External Client Ingress
 
-External client ingress extends Grid's workload-routing model to a stable
-public endpoint. A global traffic manager selects an edge. Grid and Praxis then
+External client ingress extends AGN's workload-routing model to a stable
+public endpoint. A global traffic manager selects an edge. AGN and Praxis then
 select and reach an eligible provider.
 
 This document defines the production architecture contract. The
 `Repository Implementation` section identifies the capabilities implemented
-by the current Grid/Praxis integration. Deployment-specific development
+by the current AGN/Praxis integration. Deployment-specific development
 topologies and proof commands are documented with their environment rather
 than embedded in this contract.
 
 The [Praxis demos repository](https://github.com/praxis-proxy/demos)
 provides a generic managed-DNS validation contract with an OpenShift reference
-implementation. It keeps public edge selection separate from Grid provider
+implementation. It keeps public edge selection separate from AGN provider
 selection and documents the health and regional-policy limits of DNS steering.
 
 The architecture has two independent routing stages:
@@ -21,7 +21,7 @@ The architecture has two independent routing stages:
 external client
   -> managed DNS / Anycast / global traffic manager
   -> Praxis AI edge gateway
-  -> Grid-selected Praxis provider gateway
+  -> AGN-selected Praxis provider gateway
   -> provider-local inference backend
 ```
 
@@ -32,14 +32,14 @@ or parsed request body.
 
 ## Ingress Patterns
 
-Grid uses the same provider-routing contract for two entry patterns.
+AGN uses the same provider-routing contract for two entry patterns.
 
 ### Workload Ingress
 
 ```text
 in-cluster workload
   -> cluster-local Praxis consumer gateway
-  -> Grid-selected provider gateway
+  -> AGN-selected provider gateway
   -> inference backend
 ```
 
@@ -49,26 +49,26 @@ in-cluster workload
 external client
   -> stable public service name
   -> healthy active edge selected by GTM
-  -> Grid-selected provider gateway
+  -> AGN-selected provider gateway
   -> inference backend
 ```
 
 The edge fleet is replicated. One public name does not imply one gateway
-process or a single Grid controller.
+process or a single AGN controller.
 
 ## Component Ownership
 
 | Component | Owned behavior |
 |---|---|
 | Global traffic manager | Public DNS/Anycast, client-to-edge proximity and latency steering, edge health withdrawal, controlled failback, public-edge DDoS/WAF integration. |
-| Grid operator | Site/provider discovery, policy eligibility, provider and metric state, edge-perspective scoring, admission state, ordered overlay generation. |
+| AGN Operator | Site/provider discovery, policy eligibility, provider and metric state, edge-perspective scoring, admission state, ordered overlay generation. |
 | Overlay distribution | Delivery of a versioned local snapshot to the edge without entering the request path. |
 | Praxis AI edge | External identity/policy filters, model extraction, `intelligent_route`, session binding, selected-cluster metadata, provider credential injection when the edge is the final hop. |
 | Praxis provider gateway | Edge-peer authentication, destination-side authorization, provider-local limits/policy, and private backend forwarding. |
 | Praxis core / Pingora | Listener TLS, mTLS, peer identity extraction, connection pooling, health checks, load balancing, timeouts, graceful drain, and upstream I/O. |
 
-Grid is a routing control plane. It does not proxy inference traffic. Praxis AI
-does not join SWIM or query Kubernetes, Grid operators, DNS control APIs, or
+AGN is a routing control plane. It does not proxy inference traffic. Praxis AI
+does not join SWIM or query Kubernetes, AGN Operators, DNS control APIs, or
 the filesystem while processing a request.
 
 ## Request Path
@@ -83,7 +83,7 @@ request ID and trusted forwarding metadata
   -> rate, concurrency, and body limits
   -> model or capability extraction
   -> optional logical-model classification
-  -> Grid candidate matching
+  -> AGN candidate matching
   -> established-session binding or new-session selection
   -> provider cluster selection
   -> gateway-to-gateway mTLS
@@ -126,14 +126,14 @@ Hard gates precede preferences:
 5. logical route class for configured aliases;
 6. established-session binding;
 7. new-session locality tier;
-8. Grid selection tier and rank;
-9. deterministic selection among candidates Grid marks equivalent.
+8. AGN selection tier and rank;
+9. deterministic selection among candidates AGN marks equivalent.
 
 Location is a property of the edge's trusted deployment identity. Client
 headers such as `X-Region`, `X-Country`, or internal route-class headers do not
-control Grid locality.
+control AGN locality.
 
-Grid computes site distance from the edge `GridSite` and provider `GridSite`:
+AGN computes site distance from the edge `GridSite` and provider `GridSite`:
 
 ```text
 same_site -> same_zone -> same_region -> cross_region -> unknown
@@ -153,10 +153,10 @@ The overlay carries a bounded admission result rather than raw metric series:
 | `existing_only` | denied | allowed while the binding remains valid |
 | `none` | denied | denied; the binding is replaced or the request fails |
 
-The provider site owns normalized, timestamped capacity signals. Grid owns the
+The provider site owns normalized, timestamped capacity signals. AGN owns the
 policy that turns those signals into admission state, including hysteresis,
 hold-down, expiry, and explicit drain overrides. Praxis consumes the result and
-does not reproduce Grid's metric formula.
+does not reproduce AGN's metric formula.
 
 Unknown, pending, stale, or expired provider state is closed to new work in the
 external edge profile.
@@ -167,7 +167,7 @@ Affinity is keyed from authenticated tenant identity, a validated session ID,
 the normalized capability, and any bound route class. Source IP and
 client-supplied tenant metadata are not affinity inputs.
 
-For a new session, Praxis selects within the closest usable Grid selection
+For a new session, Praxis selects within the closest usable AGN selection
 tier. For an established session, the binding remains authoritative while the
 candidate is eligible for existing work. A `none` candidate, provider loss,
 policy loss, or capability loss breaks the binding. Recovery does not
@@ -188,17 +188,17 @@ The edge authenticates the external bearer token, JWT, or API key and derives a
 bounded tenant/principal context. The external client's `Authorization` header is
 removed before gateway-to-gateway or provider traffic.
 
-### Grid Peer Identity
+### AGN Peer Identity
 
-The edge presents its Grid client certificate to a provider Praxis gateway.
+The edge presents its AGN client certificate to a provider Praxis gateway.
 The provider validates the CA chain, SNI/server identity, client certificate,
 and configured `peer_identity_trust` policy. Public server certificates and
-Grid site certificates remain separate trust domains with separate rotation.
+AGN site certificates remain separate trust domains with separate rotation.
 
 ### Provider Credential
 
 The component making the final provider API call owns the provider credential.
-Grid carries a Secret reference, never credential bytes.
+AGN carries a Secret reference, never credential bytes.
 
 | Route | Credential placement |
 |---|---|
@@ -221,17 +221,17 @@ GTM probes edge liveness and readiness separately:
 | Drain | The edge accepts no new connections while existing streams receive a bounded completion window. |
 
 An individual provider failure does not make an otherwise useful edge unready.
-Grid removes that provider from eligible routes. Loss of all required route
+AGN removes that provider from eligible routes. Loss of all required route
 coverage, a hard-expired snapshot, or a failed security dependency makes the
 edge unready and causes GTM withdrawal.
 
 GTM steering moves new connections. It does not migrate an in-flight SSE
 stream.
 
-Route-aware readiness belongs with the accepted Grid routing snapshot because
+Route-aware readiness belongs with the accepted AGN routing snapshot because
 generic process or cluster health cannot prove that the edge has fresh, usable
 public route coverage. The traffic manager consumes readiness but never reads
-the Grid overlay or selects a provider.
+the AGN overlay or selects a provider.
 
 ## Retry and Streaming Rules
 
@@ -254,7 +254,7 @@ Provider or edge failover applies to later requests, not an active stream.
 The production acceptance contract uses a versioned, bounded envelope. The
 current repository emits the subset listed under `Repository Implementation`;
 revision, digest, expiry, and serving-status fields remain release gates until
-their implementation is present across Grid generation, distribution, and
+their implementation is present across AGN generation, distribution, and
 Praxis acceptance.
 
 ```json
@@ -317,7 +317,7 @@ using that revision.
 
 ## Repository Implementation
 
-The Grid and Praxis integration provides:
+The AGN and Praxis integration provides:
 
 - per-`GatewayRef` routing overlay generation;
 - candidate model/site/cluster identity;

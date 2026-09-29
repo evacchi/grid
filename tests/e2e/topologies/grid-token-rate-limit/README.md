@@ -1,7 +1,7 @@
-# Distributed Token Quota with Grid Routing
+# Distributed Token Quota with AGN Routing
 
 This Forge topology qualifies a shared sliding-window token budget in front
-of Grid-managed provider selection. It is separate from the generic
+of AGN-managed provider selection. It is separate from the generic
 provider-traffic and llm-d examples.
 
 ```mermaid
@@ -50,13 +50,13 @@ gateways.
 
 The qualification admits only the `alice` Basic Auth principal, so its model-matched
 limiter rule represents Alice's budget. Both gateway instances address the same Valkey
-key. The quota therefore follows Alice's requests while Grid rotates admitted
+key. The quota therefore follows Alice's requests while AGN rotates admitted
 traffic among New York, London, and Tokyo; a regional route change never creates
 fresh capacity.
 
 Current upstream AI keys this state by namespace and rule rather than consuming
 the authenticated username directly. Adding more independently budgeted users
-requires the trusted principal-key contract tracked in Grid issue 101.
+requires the trusted principal-key contract tracked in issue #101.
 
 ## Request Flow
 
@@ -67,15 +67,15 @@ flowchart LR
     Auth -->|yes| Model[Validate JSON model]
     Model --> Quota{Shared reservation admitted?}
     Quota -->|no| Limited[HTTP 429 without provider contact]
-    Quota -->|yes| Route[Grid overlay snapshot]
+    Quota -->|yes| Route[AGN overlay snapshot]
     Route --> Pick[Round-robin provider selection]
     Pick --> Provider[Provider gateway and VCR backend]
     Provider --> Settle[Reconcile reservation with reported usage]
 ```
 
-The routing contract is Grid selection groups with `noMetrics` scoring and
+The routing contract is AGN selection groups with `noMetrics` scoring and
 `selection_policy.mode: roundRobin`. No llm-d, EPP, pressure generator, queue
-metric, or KV-cache metric is part of this topology. Grid publishes routing
+metric, or KV-cache metric is part of this topology. AGN publishes routing
 state asynchronously and is not consulted during quota admission.
 
 Valkey owns shared quota state only. Provider round-robin counters remain local
@@ -141,7 +141,7 @@ administration use the separate admin listener and do not traverse this chain.
 | 4 | New York consumer B | New York (`west`) | Same shared window |
 
 This is the important separation: Valkey answers whether Alice may spend more
-tokens, while Grid answers which eligible regional provider should serve an
+tokens, while AGN answers which eligible regional provider should serve an
 admitted request. Neither provider identity nor region participates in the
 quota key.
 
@@ -150,7 +150,7 @@ quota key.
 1. Requests with invalid credentials stop at Basic Auth.
 2. Alice's requests arriving through either consumer reserve from the same
    Valkey-backed window.
-3. An admitted request selects a provider from the accepted in-memory Grid
+3. An admitted request selects a provider from the accepted in-memory AGN
    overlay; changing providers does not create a new budget.
 4. When the shared window cannot cover another reservation, the consumer
    returns 429 without selecting or contacting a provider.
@@ -173,12 +173,12 @@ token-rate-limit-filter
 > `ghcr.io/praxis-proxy/ai:0.4.0` image includes Basic Auth but does not contain
 > the optional `token-rate-limit-filter`, so it cannot run this qualification.
 > The standard image depends on Praxis core 0.7.0; that is distinct from the
-> Praxis AI image version 0.4.0. Grid publishes no alternate AI rollup.
+> Praxis AI image version 0.4.0. AGN publishes no alternate AI rollup.
 
 For a separate custom-image qualification, enable `token-rate-limit-filter`
 while building AI from its own clean source tree and committed lockfile. Basic
 Auth stores the qualification credential in configuration and is not the
-production identity mechanism proposed by Grid issue 101.
+production identity mechanism proposed in issue #101.
 
 AI v0.4.0's `Containerfile` does not expose a Cargo-feature build argument.
 Prepare a temporary Containerfile outside the AI worktree that adds the exact

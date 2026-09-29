@@ -1,3 +1,3 @@
 # West Resources
 
-Place resources that differ specifically for the west Grid site here.
+Place resources that differ specifically for the west AGN site here.

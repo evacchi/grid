@@ -1,20 +1,20 @@
 # Single-cluster multi-gateway qualification
 
-This qualification keeps one Kubernetes control plane and one Grid site while
+This qualification keeps one Kubernetes control plane and one AGN site while
 running two independent consumer gateways, three independent provider gateways,
 and one attributed simulator per provider. It complements the multi-cluster
 provider-traffic qualification: this topology exercises shared Kubernetes and
 overlay state, but it does not claim WAN SWIM or cross-cluster network behavior.
 
-More precisely, this topology contains one Kubernetes cluster, one Grid
-operator, one GridNetwork, and one GridSite named `single`. Multiple consumer
+More precisely, this topology contains one Kubernetes cluster, one AGN
+Operator, one `GridNetwork`, and one `GridSite` named `single`. Multiple consumer
 and provider gateway processes share that site and its generated routing state.
 
 ```mermaid
 flowchart LR
   client[restricted client pod]
   subgraph kind[one Kind cluster]
-    op[Grid operator]
+    op[AGN Operator]
     network[GridNetwork: single]
     site[GridSite: single]
     ca[consumer-a]
@@ -54,12 +54,12 @@ flowchart TD
 
 Round-robin state is process-local. The qualification therefore checks a valid
 balanced rotation independently through each consumer and does not require one
-global interleaved sequence. Grid publishes eligibility, groups, and policy;
+global interleaved sequence. AGN publishes eligibility, groups, and policy;
 Praxis selects from its already-loaded local snapshot on the request path.
 
 ## Health convergence
 
-This is a single-site qualification, so the Grid operator relies on its direct
+This is a single-site qualification, so the AGN Operator relies on its direct
 provider health checks rather than multi-site SWIM failure detection. The
 topology sets each provider's `healthCheck.interval` to `10s`, instead of the
 `30s` production default, to make local provider withdrawal and recovery
@@ -105,7 +105,7 @@ when the policy is `Never`, and recorded in qualification evidence. The runner
 fails before deployment if an explicit reference is malformed, missing, or
 absent from the materialized configuration.
 
-Build Forge and the Grid images from this checkout:
+Build Forge and the `grid-operator` and overlay-sync images from this checkout:
 
 ```console
 cargo build -p forge
@@ -162,8 +162,8 @@ A passing run proves that:
 
 - every required image is present in the Kind node before stack application;
 - all stacks and Deployments reach their observed generations;
-- both consumers receive the same three-candidate Grid overlay;
-- each consumer's accepted and serving revisions match the Grid revision;
+- both consumers receive the same three-candidate AGN overlay;
+- each consumer's accepted and serving revisions match the AGN revision;
 - each consumer independently follows the attributed A/B/C rotation;
 - removing provider B's backend withdraws B from both accepted overlays and
   new traffic continues through A and C;
@@ -183,7 +183,7 @@ Forge teardown. It never edits an accepted overlay directly.
 ## Scope
 
 This qualification proves multiple independent gateway processes inside one
-Kubernetes cluster and one Grid site. It does not prove WAN connectivity, SWIM
+Kubernetes cluster and one AGN site. It does not prove WAN connectivity, SWIM
 membership between sites, a single globally coordinated round-robin cursor, or
 load balancing among replicas hidden behind one provider gateway. Use the
 multi-cluster provider-traffic qualification for cross-site discovery and

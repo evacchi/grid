@@ -1,10 +1,10 @@
-# Routing Architecture and Overlay Contract
+# AGN Routing Architecture and Overlay Contract
 
 For operator-facing routing choices and configuration examples, see the
-[Grid Routing Guide](../routing.md). This page describes how Grid renders,
+[AGN Routing Guide](../routing.md). This page describes how AGN renders,
 versions, distributes, and secures routing state.
 
-Grid routing is split between the Grid Operator control plane and the Praxis
+AGN routing is split between the AGN Operator control plane and the Praxis
 data plane. The operator renders routing state. Praxis consumes that state and
 proxies requests.
 
@@ -16,7 +16,7 @@ GridNetwork + InferenceProvider CRDs
   + CRDT provider records
         |
         v
-Grid Operator
+AGN Operator
         |
         v
 Versioned routing overlay ConfigMap
@@ -34,12 +34,12 @@ Praxis provider gateway
 llm-d / EPP / inference backend
 ```
 
-Grid does not proxy traffic. It writes the overlay used by Praxis filters.
+AGN does not proxy traffic. It writes the overlay used by Praxis filters.
 
-Grid orders candidates and assigns group metadata before publishing the
+AGN orders candidates and assigns group metadata before publishing the
 overlay. Praxis consumes that state locally; the user-facing semantics of
 routing policies, selection groups, and picker modes are described in the
-[Grid Routing Guide](../routing.md).
+[AGN Routing Guide](../routing.md).
 
 ## Control-plane rendering path
 
@@ -65,17 +65,17 @@ Both keys describe the same routing state.
 
 ## How re-ranking updates
 
-Grid does not re-rank a provider inside the request path. Re-ranking happens
-when the Grid operator reconciles a `GridNetwork` and publishes a new routing
+AGN does not re-rank a provider inside the request path. Re-ranking happens
+when the AGN Operator reconciles a `GridNetwork` and publishes a new routing
 overlay. Praxis then uses the most recent overlay that it has accepted.
 
 The complete update path is:
 
 ```text
-provider metrics / Kubernetes state / remote Grid state changes
+provider metrics / Kubernetes state / remote AGN state changes
                               |
                               v
-                    Grid operator reconcile
+                    AGN Operator reconcile
                               |
               scrape and normalize provider metrics
                               |
@@ -132,14 +132,14 @@ Use shorter intervals only for deliberately latency-sensitive deployments.
 
 ### What happens during re-ranking
 
-During reconciliation, Grid:
+During reconciliation, AGN:
 
 1. Lists the eligible `InferenceProvider` resources and `GridSite` resources.
 2. Scrapes each configured metrics endpoint, such as an llm-d EPP endpoint.
 3. Normalizes the signal selected by `scoringPolicy` and applies freshness and
    health handling.
 4. Builds the candidate set, including eligible remote providers received
-   through Grid state.
+   through AGN state.
 5. Computes the selected strategy's score and applies admission and
    `routingPolicy` ordering. The first candidate receives rank `0`, the next
    receives rank `1`, and so on.
@@ -149,12 +149,12 @@ During reconciliation, Grid:
 7. Applies the overlay ConfigMap and records rendered/distributed revision
    status.
 
-If rendering or applying a new overlay fails, Grid retains the previously
+If rendering or applying a new overlay fails, AGN retains the previously
 distributed revision rather than publishing a partial routing state.
 
 ### How the new overlay reaches Praxis
 
-After Grid applies the ConfigMap, delivery is separate from re-ranking:
+After AGN applies the ConfigMap, delivery is separate from re-ranking:
 
 - With `overlay-sync` enabled, the sidecar watches the named ConfigMap,
   validates the envelope and digest, atomically replaces the serving file, and
@@ -163,7 +163,7 @@ After Grid applies the ConfigMap, delivery is separate from re-ranking:
   file-watch/projection behavior.
 - Praxis validates the new overlay and atomically swaps its in-memory snapshot.
   Invalid updates leave the last-known-good snapshot serving; no request reads
-  Kubernetes or Grid directly.
+  Kubernetes or AGN directly.
 
 Overlay-sync can remove kubelet projection delay, but it does **not** make
 metrics collection or operator reconciliation more frequent. The end-to-end
@@ -177,7 +177,7 @@ pressure or recovery transition. That annotation creates an immediate watch
 event and bypasses the normal 300-second periodic requeue, allowing the demo
 to show the queue change, re-ranking, overlay revision, and routed request in
 one controlled flow. This is orchestration behavior for the demo; it is not a
-different Grid scoring algorithm.
+different AGN scoring algorithm.
 
 ## Routing overlay format
 
@@ -264,7 +264,7 @@ The nested `overlay` is the compact routing payload:
 capability (the candidate's `kind` and `name`). Praxis considers the first
 viable group and applies the overlay-level `selection_policy` within it.
 `traffic_weight` is a relative weight for `weightedRandom`, not a percentage
-or a score. Grid emits it from configured provider capacity when static
+or a score. AGN emits it from configured provider capacity when static
 weighted placement is enabled. If `selection_policy` is omitted, Praxis uses
 deterministic selection. Unknown selection modes and malformed policy
 structures are rejected rather than silently changed to a different mode.
@@ -297,7 +297,7 @@ encoded overlay intended for a different gateway. Enabling expected scope also
 requires the envelope format; the consumer cannot silently downgrade to the
 unscoped legacy payload.
 
-Provenance identifies the producing Grid operator and source `GridNetwork`.
+Provenance identifies the producing AGN Operator and source `GridNetwork`.
 Praxis AI validates required values and bounds before accepting the envelope.
 Provenance supports audit and diagnosis but is not an authorization credential.
 
@@ -311,12 +311,12 @@ The contract distinguishes four observable stages:
 
 | Stage | Owner | Evidence |
 |---|---|---|
-| **Rendered** | Grid operator | `GridNetwork.status.overlayStatus[].renderedRevision` |
-| **Distributed** | Grid operator and Kubernetes | `distributedRevision` plus the applied `ConfigMap` `resourceVersion` |
+| **Rendered** | AGN Operator | `GridNetwork.status.overlayStatus[].renderedRevision` |
+| **Distributed** | AGN Operator and Kubernetes | `distributedRevision` plus the applied `ConfigMap` `resourceVersion` |
 | **Accepted** | Praxis AI | Successful validation and atomic snapshot-load event |
 | **Serving** | Praxis AI request path | The selected immutable snapshot revision attached to provider-hop telemetry |
 
-On a successful apply, rendered and distributed revisions match. If Grid
+On a successful apply, rendered and distributed revisions match. If AGN
 renders revision B but cannot apply it, status can report rendered B while
 retaining distributed A and its `resourceVersion`. This distinction prevents a
 render attempt from being mistaken for a deployed routing change.
@@ -326,7 +326,7 @@ in-memory snapshot. Invalid cold-start state fails closed. An invalid update
 retains the same-process last-known-good snapshot, and an unchanged semantic
 revision does not cause a replacement. The request path reads the immutable
 accepted snapshot from memory and does not read Kubernetes, the filesystem,
-SWIM, or Grid APIs.
+SWIM, or AGN APIs.
 
 For a provider hop, `intelligent_route` removes any caller-supplied revision context
 and sets `x-ai-routing-revision` from the exact snapshot that served the
@@ -341,12 +341,12 @@ Candidate fields:
 |---|---|
 |`kind`|Capability kind, currently `inference_model` for model routing.|
 |`name`|Model or capability name matched by the consumer gateway.|
-|`site`|Grid site advertising the capability.|
+|`site`|AGN site advertising the capability.|
 |`cluster`|Praxis load-balancer cluster identity used for upstream routing.|
 |`fresh`|Whether provider status is considered fresh enough for normal routing.|
 |`credential`|Optional. Projected when auth is non-manual `bearer_token` and the Secret reference has non-empty `name`, `namespace`, and `key`, regardless of `backendKind`. Contains only Secret locating information, never the token value.|
 |`stable_id`|Optional. Deterministic FNV-1a hash of `{kind}/{name}/{site}/{cluster}`. Used as `candidate_id` in provider gateway `provider_route` configuration. This differs from InferenceProvider `.metadata.name`; it can also key consumer-side affinity.|
-|`admission_state`|Optional Praxis value: `new_and_existing`, `existing_only`, or `none`. Grid removes excluded candidates before serialization and does not currently emit `none`.|
+|`admission_state`|Optional Praxis value: `new_and_existing`, `existing_only`, or `none`. AGN removes excluded candidates before serialization and does not currently emit `none`.|
 |`selection_tier`|Optional locality tier: `same_site`, `same_zone`, `same_region`, `cross_region`, or `unknown`. Derived from `GridSite` region and zone.|
 |`rank`|Optional zero-based position in the final sorted overlay.|
 |`selection_group`|Optional zero-based, contiguous priority group per capability. Praxis selects within the first viable group; mixing grouped and ungrouped candidates for one capability is invalid.|
@@ -360,7 +360,7 @@ Overlay-level fields:
 |`selection_policy`|Optional object with mode `deterministic`, `roundRobin`, `random`, or `weightedRandom`. Omission means deterministic. Invalid policies are rejected; the field contributes to the semantic revision.|
 
 The metadata fields above belong to the generic Praxis AI routing contract.
-Grid supplies Grid-specific values through that contract. The generated Praxis
+AGN supplies its values through that contract. The generated Praxis
 static `intelligent_route` configuration intentionally strips
 `stable_id`, `admission_state`, `selection_tier`, `rank`, and `generated_at`
 because current static `intelligent_route` candidate config rejects unknown fields.
@@ -381,12 +381,12 @@ Credential injection is handled by the final-hop gateway that makes the final
 backend call.  For direct API-provider or cloud-provider fallback, the consumer
 gateway is often also the final-hop gateway, so it mounts the Secret and Praxis
 AI injects the credential before forwarding to the provider API.  For remote
-Grid sites, provider backend credentials stay in the remote provider site or
+For remote AGN sites, provider backend credentials stay in the remote provider site or
 provider-side component; the consumer gateway should not receive those provider
 tokens.
 
 Native file-backed injection requires the Praxis AI `credential_inject`
-filter.  Grid can render the overlay and generated config for that path today,
+filter. AGN can render the overlay and generated config for that path today,
 but runtime deployments must use a Praxis AI image that includes the filter.
 
 ## Candidate scoring and ordering
@@ -433,7 +433,7 @@ instantaneous behavior:
 | Condition | State |
 |-----------|-------|
 | No metrics available | `new_and_existing` |
-| `healthy = false` | `none` (excluded; current Grid omits the candidate from its overlay) |
+| `healthy = false` | `none` (excluded; current AGN omits the candidate from its overlay) |
 | `queue_depth > 0.85` or `kv_cache_utilization > 0.90` | `existing_only` |
 | Otherwise | `new_and_existing` |
 
@@ -448,7 +448,7 @@ observations plus a minimum state duration and recovery hold-down before
 returning to `new_and_existing`. Hard health failures still move immediately to
 `none`. The evaluator is control-plane state keyed by provider identity; no
 admission check runs in the request path. With no active signal configured,
-Grid treats the observation as `NotConfigured` and keeps otherwise healthy
+AGN treats the observation as `NotConfigured` and keeps otherwise healthy
 providers `new_and_existing`.
 
 The wire states remain `new_and_existing`, `existing_only`, and `none`, so this
@@ -566,11 +566,11 @@ or does not use a Praxis gateway.
 | `backendKind` | Meaning | Typical path | Placement intent |
 |----------------|---------|--------------|------------------|
 | `local` | Self-hosted capacity in the local site. | Consumer Praxis directly to local/provider-side Praxis or local backend cluster. | Prefer first when healthy. |
-| `remote` | Self-hosted capacity in another Grid site. | Gateway-to-gateway mTLS to a remote Praxis provider gateway. | Prefer after local Grid-owned capacity. |
-| `cloud_managed` | Managed model capacity under the operator's cloud account. | Praxis gateway, provider adapter, or direct managed-service endpoint depending on deployment. | Prefer after Grid-owned capacity and before generic SaaS fallback. |
+| `remote` | Self-hosted capacity in another AGN site. | Gateway-to-gateway mTLS to a remote Praxis provider gateway. | Prefer after local AGN capacity. |
+| `cloud_managed` | Managed model capacity under the operator's cloud account. | Praxis gateway, provider adapter, or direct managed-service endpoint depending on deployment. | Prefer after AGN-managed capacity and before generic SaaS fallback. |
 | `api_provider` | Third-party API/SaaS provider fallback. | Praxis injects configured provider credential and forwards to the API endpoint. | Last-resort or explicit fallback tier. |
 
-`cloud_managed` is distinct because Grid should apply different cost,
+`cloud_managed` is distinct because AGN should apply different cost,
 credential, observability, and placement assumptions than it applies to
 self-hosted sites. A deployment may still place Praxis in front of a
 cloud-managed backend; the category describes operational ownership, not a
@@ -578,7 +578,7 @@ requirement to bypass Praxis.
 
 ## Multi-cluster model routing
 
-Multi-cluster model routing is the baseline Grid data-plane behavior:
+Multi-cluster model routing is the baseline AGN data-plane behavior:
 
 1. Each provider site declares the models it can serve through
    `InferenceProvider.spec.models`.
@@ -625,7 +625,7 @@ The fallback decision is therefore still local to the consumer gateway at
 request time: `intelligent_route` selects from the pre-rendered candidate list, and the
 Praxis AI filter chain handles credential injection and upstream forwarding.
 
-Grid overlay and credential-injection validation is distinct from
+AGN overlay and credential-injection validation is distinct from
 provider-protocol acceptance. Each external provider integration must
 separately qualify its protocol, authentication exchange, timeout and retry
 semantics, error mapping, streaming behavior, and credential rotation.
@@ -676,7 +676,7 @@ load_balancer           → upstream cluster selection with injected headers
 ```
 
 This filter chain requires a Praxis AI image that includes
-`credential_inject`.  Grid renders the overlay and generated config shape;
+`credential_inject`. AGN renders the overlay and generated config shape;
 the runtime image must provide the filter implementation.
 
 ### File-backed token source
@@ -689,11 +689,11 @@ configured `file:` path at filter construction time.
 
 In production, the same rule applies at the final-hop point: mount the Secret
 only into the final-hop gateway or provider-side component that makes the final
-backend call. Grid does not copy Secret values across clusters.
+backend call. AGN does not copy Secret values across clusters.
 
 The token does NOT appear in:
 
-- The Grid operator overlay `ConfigMap` (JSON).
+- The AGN Operator overlay `ConfigMap` (JSON).
 - The `intelligent_route` filter candidates YAML.
 - The consumer Praxis `ConfigMap`.
 - The `intelligent_route.*` in-process filter metadata.
@@ -713,7 +713,7 @@ regardless of how the final-hop Secret is provisioned.
 
 ## Routing eligibility
 
-The Grid operator enforces a routing eligibility gate on remote provider state
+The AGN Operator enforces a routing eligibility gate on remote provider state
 received over SWIM CRDT broadcasts.  A remote provider record is included in the
 routing overlay only when the corresponding `GridSite.status.phase` is `Active`.
 
@@ -737,7 +737,7 @@ site's certificate fingerprint against the configured trust policy and confirmed
 connectivity to the gateway. This allows the site's providers to appear in routing
 overlays for consideration by consumer gateways.
 
-GridSite Active is a control-plane eligibility signal. It means Grid has enough
+GridSite Active is a control-plane eligibility signal. It means AGN has enough
 site/trust information to consider the site for overlay generation. It does not
 currently prove that a Praxis gateway has completed an mTLS handshake, accepted
 client identity, loaded the latest routing config, or authorized provider-side
@@ -763,7 +763,7 @@ correct-network overlay.
 ## Consumer gateway selection
 
 At request time, `intelligent_route` matches the requested model against the
-already-loaded overlay candidates, then chooses from Grid's pre-rendered
+already-loaded overlay candidates, then chooses from AGN's pre-rendered
 candidate order.  It does not call Kubernetes, SWIM, or the operator, and it
 does not recompute the full scoring formula per request.
 
@@ -778,7 +778,7 @@ an unrelated backend.
 ### External edge routing
 
 External client ingress uses the same overlay consumption path. A Praxis AI
-edge-ingress gateway loads a Grid overlay rendered for that edge's routing
+edge-ingress gateway loads an AGN overlay rendered for that edge's routing
 perspective and runs `intelligent_route` identically to a cluster-local consumer
 gateway.
 
@@ -789,7 +789,7 @@ the model, and runs the loaded overlay selection.  Two-stage routing separates
 edge selection (network proximity, health) from provider selection (model,
 policy, capacity, location affinity).
 
-Grid renders a per-gateway overlay specific to each edge's site and region.
+AGN renders a per-gateway overlay specific to each edge's site and region.
 With overlay-file hot reload enabled, the edge validates a replacement overlay
 and swaps its in-memory snapshot atomically without process restart. Each
 request uses one loaded snapshot for selection.
@@ -846,11 +846,11 @@ provider gateway
   -> inference pod or service
 ```
 
-Grid chooses the provider site. llm-d or the provider-local scheduler chooses
+AGN chooses the provider site. llm-d or the provider-local scheduler chooses
 the concrete pod, GPU, or endpoint inside that site. Envoy ExternalProcessor
 service integration is owned by
 [`praxis-proxy/extproc`](https://github.com/praxis-proxy/extproc); it is an
-optional provider-local integration and is not part of the Grid overlay
+optional provider-local integration and is not part of the AGN overlay
 contract.
 
 ## Metrics and CRDT inputs
@@ -875,7 +875,7 @@ responsibility at each layer:
 | `kv_cache_utilization` | `[0.0, 1.0]` (ratio) | Prometheus exporter; clamped in the operator ingestion layer |
 | `latency_p99_ms` | `≥ 0.0 ms` (raw milliseconds) | Prometheus exporter exposes a pre-computed P99 gauge; the **scoring engine** normalizes internally using `MAX_LATENCY = 5000 ms` |
 | `prefix_cache_hit_ratio` | `[0.0, 1.0]` (ratio) | Prometheus exporter; clamped in the scoring engine |
-| `queue_depth` | `[0.0, 1.0]` (ratio) | Exporter or recording rule; alternatively Grid divides a raw count by `metricsConfig.queueCapacity` |
+| `queue_depth` | `[0.0, 1.0]` (ratio) | Exporter or recording rule; alternatively AGN divides a raw count by `metricsConfig.queueCapacity` |
 
 ### Destination-normalized metrics preferred
 
@@ -884,11 +884,11 @@ possible: the Prometheus exporter (or a recording rule on the destination)
 converts raw queue depths to a `[0.0, 1.0]` ratio. This remains the preferred
 pattern because heterogeneous sites can adapt normalization to their local
 context. When an llm-d EPP exposes an absolute average queue size, set
-`metricsConfig.queueCapacity`; Grid divides the raw value by that capacity and
+`metricsConfig.queueCapacity`; AGN divides the raw value by that capacity and
 clamps the result to `[0.0, 1.0]`.
 
 For cloud-managed providers and third-party APIs where the destination
-cannot export normalized metrics, the Grid operator may apply an adapter
+cannot export normalized metrics, the AGN Operator may apply an adapter
 when the normalization contract is stable.
 
 ### Missing-value defaults
@@ -946,7 +946,7 @@ implement affinity-aware routing.
 
 ## When the routing overlay regenerates
 
-The overlay `ConfigMap` is regenerated by the Grid Operator whenever the owning
+The overlay `ConfigMap` is regenerated by the AGN Operator whenever the owning
 `GridNetwork` reconciles.
 
 | Trigger | Effect |

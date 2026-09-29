@@ -1,9 +1,9 @@
-# Grid
+# AI Grid Network (AGN)
 
-Grid is a distributed control plane that connects AI
+AI Grid Network (AGN) is a distributed control plane that connects AI
 inference backends across Kubernetes clusters, cloud
 providers, and third-party APIs into a single routable
-mesh. It figures out where models are, which backends
+mesh. AGN figures out where models are, which backends
 are healthy, and which one should handle the next
 request - then tells the [Praxis] gateway how to route.
 
@@ -11,7 +11,7 @@ request - then tells the [Praxis] gateway how to route.
 
 ## How It Works
 
-Grid is an orchestrator, not a proxy. It watches
+The AGN Operator is an orchestrator, not a proxy. It watches
 Kubernetes resources, discovers peer sites over a
 gossip protocol (SWIM), propagates provider state
 with CRDTs, scores candidates, and writes a routing
@@ -22,7 +22,7 @@ overlay that Praxis consumes at request time.
 |  Site A (Kubernetes)      |     |  Site B (Kubernetes)      |
 |                           |     |                           |
 |  +---------------------+  |     |  +---------------------+  |
-|  | Grid Operator       |  |     |  | Grid Operator       |  |
+|  | AGN Operator        |  |     |  | AGN Operator        |  |
 |  | - SWIM membership   |  |     |  | - SWIM membership   |  |
 |  | - CRDT state sync   |  |     |  | - CRDT state sync   |  |
 |  | - scoring engine    |  |     |  | - scoring engine    |  |
@@ -49,10 +49,10 @@ overlay that Praxis consumes at request time.
 
 The gateways communicate over mTLS.
 
-The Grid operators exchange membership and provider state over SWIM and CRDT
+AGN Operators exchange membership and provider state over SWIM and CRDT
 replication.
 
-Grid handles the **control plane** (what should be
+AGN handles the **control plane** (what should be
 routable). Praxis handles the **data plane** (routing
 and proxying actual requests).
 
@@ -71,19 +71,19 @@ site: model name, backend kind (self-hosted,
 cloud-managed, or API provider), health config, and
 auth strategy.
 
-**Routing overlay** - a versioned ConfigMap that Grid
+**Routing overlay** - a versioned ConfigMap that AGN
 writes for each gateway. Contains scored candidates,
 cluster definitions with mTLS config, and credential
 references. Praxis hot-reloads this without restarts.
 
-**Scoring** - Grid applies one provider-level strategy before
+**Scoring** - AGN applies one provider-level strategy before
 writing the overlay. `noMetrics` is the generic default for
 external APIs and providers without comparable telemetry.
 llm-d pools can opt into `queueDepth` or `kvCachePressure`.
 Request-specific prefix affinity remains inside llm-d EPP,
-which selects a pod after Grid selects a provider pool.
+which selects a pod after AGN selects a provider pool.
 
-See the [Grid Routing Guide](docs/routing.md) for configuration by routing
+See the [AGN Routing Guide](docs/routing.md) for configuration by routing
 need, selection groups, request-time selection modes, affinity, and runnable
 examples.
 
@@ -104,7 +104,7 @@ client request
   -> response returns to the client
 ```
 
-Grid is never in the request path. All routing
+AGN is never in the request path. All routing
 decisions use a pre-computed local overlay file.
 
 ## Install
@@ -129,14 +129,13 @@ For Kustomize or raw manifests, see
 
 ## Getting Started
 
-[Grid QuickStarts](https://github.com/praxis-proxy/demos)
-— deployable demonstrations with automated runtime
+[Praxis demos](https://github.com/praxis-proxy/demos): deployable demonstrations
+with automated runtime
 proofs of routing, failover, security boundaries,
 and provider lifecycle.
 
-[Existing-cluster installation](docs/installation/existing-clusters.md)
-— install Grid and Praxis on running Kubernetes
-clusters with Helm.
+[Existing-cluster installation](docs/installation/existing-clusters.md): install
+AGN and Praxis on running Kubernetes clusters with Helm.
 
 ## Workspace Crates
 
@@ -151,6 +150,18 @@ clusters with Helm.
 | `mock-providers` | Mock OpenAI, Anthropic, Bedrock, Vertex APIs |
 | `forge` | Generic development-environment orchestrator for Kubernetes |
 | `xtask` | Dev task runner for multi-cluster test environments |
+
+## Project name and compatibility
+
+AI Grid Network (AGN) is the human-facing project name used in documentation.
+Established software identifiers remain unchanged:
+the Rust package and binary are `operator`, the deployed operator is
+`grid-operator`, the operator chart is `grid-operator`, and the gateway chart is
+`praxis-gateway`. The API group remains `grid.praxis-proxy.io`, with kinds such
+as `GridNetwork` and `GridSite`; existing `grid-*` resource names, `GRID_*`
+environment variables, labels, metrics, and configuration fields are unchanged.
+Existing downstream names, including `praxis-ai-grid-operator` where used, are
+also unchanged. Downstream naming alignment is deferred to a separate effort.
 
 ## Development
 

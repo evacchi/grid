@@ -1,12 +1,12 @@
 # Adding an Inference Provider
 
 Step-by-step workflow for adding a new inference provider to an existing
-Grid installation. Covers in-cluster backends, existing services, and
+AGN installation. Covers in-cluster backends, existing services, and
 external HTTPS APIs.
 
 ## Prerequisites
 
-- A running Grid installation with `install.sh` (see the
+- A running AGN installation with `install.sh` (see the
   [Existing-Cluster Helm Installation](installation/existing-clusters.md))
 - `kubectl`, `helm`, `jq`, `python3`, `yq` (v4.18.0+)
 - Cluster access via `KUBECONFIG` and `--context`
@@ -23,7 +23,7 @@ each resource prevents conflicts and simplifies troubleshooting.
 | Backend Deployment + Service | `grid-mock-providers` chart (or user) | `install.sh` or manual |
 | Credential Secret | User | `kubectl create secret` |
 | InferenceProvider CR | `grid-site` chart | `install.sh` |
-| Overlay ConfigMap | Grid Operator (read-only) | Automatic after CR reconciliation |
+| Overlay ConfigMap | AGN Operator (read-only) | Automatic after CR reconciliation |
 | Provider Praxis config | Installer | `install.sh` `render_provider_config` |
 | Consumer Praxis config | Installer | `install.sh` (direct copy) |
 | Provider gateway mounts | `praxis-gateway` chart | `install.sh` |
@@ -484,7 +484,7 @@ ingress from two sources:
 
 1. **Provider gateway** pods (`app.kubernetes.io/instance: provider-gateway`)
    — for request forwarding
-2. **Grid operator** pods (`app.kubernetes.io/name: grid-operator`)
+2. **AGN Operator** pods (`app.kubernetes.io/name: grid-operator`)
    — for health check probes
 
 If the operator cannot reach a backend's endpoint, the InferenceProvider

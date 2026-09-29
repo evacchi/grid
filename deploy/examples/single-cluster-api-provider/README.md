@@ -12,7 +12,7 @@ Grid-generated ConfigMap.
 
 ## Prerequisites
 
-1. Grid operator installed (see `../../README.md`)
+1. AGN Operator installed (see `../../README.md`)
 2. Praxis AI gateway deployment with:
    - `intelligent_route` filter
    - `credential_inject` filter
@@ -43,7 +43,7 @@ kubectl get configmap grid-overlay-example-consumer-gateway -o yaml
 
 ## Generated Resources
 
-The Grid operator will create:
+The AGN Operator will create:
 
 - `ConfigMap/grid-overlay-example-consumer-gateway` - routing overlay for
   Praxis AI

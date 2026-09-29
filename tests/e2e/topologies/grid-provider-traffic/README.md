@@ -1,6 +1,6 @@
 # Provider Traffic Selection
 
-This topology demonstrates Grid publishing a provider-selection contract and Praxis applying that contract locally for each request. It creates three Kind clusters, three independently attributable provider gateways, and one consumer gateway.
+This topology demonstrates AGN publishing a provider-selection contract and Praxis applying that contract locally for each request. It creates three Kind clusters, three independently attributable provider gateways, and one consumer gateway.
 
 The focused proof sends 60 requests without session affinity. With
 `selectionPolicy.mode: roundRobin`, the expected result is a repeating
@@ -8,7 +8,7 @@ three-provider cycle and exactly 20 responses from each provider. The first
 measured request can use any provider because readiness probes may already have
 advanced the gateway-local cursor.
 
-This scenario tests provider selection across Grid sites. It does not test load balancing among replicas hidden behind one provider gateway, distributed token quotas, or cloud bursting.
+This scenario tests provider selection across AGN sites. It does not test load balancing among replicas hidden behind one provider gateway, distributed token quotas, or cloud bursting.
 
 ## Topology
 
@@ -18,7 +18,7 @@ flowchart TB
 
     subgraph a[Kind cluster: provider-a]
         consumer[Consumer gateway<br/>intelligent_route]
-        operatorA[Grid operator]
+        operatorA[AGN Operator]
         gatewayA[Provider gateway A]
         simulatorA[VCR simulator A]
         operatorA -->|accepted overlay| consumer
@@ -26,14 +26,14 @@ flowchart TB
     end
 
     subgraph b[Kind cluster: provider-b]
-        operatorB[Grid operator]
+        operatorB[AGN Operator]
         gatewayB[Provider gateway B]
         simulatorB[VCR simulator B]
         gatewayB --> simulatorB
     end
 
     subgraph c[Kind cluster: provider-c]
-        operatorC[Grid operator]
+        operatorC[AGN Operator]
         gatewayC[Provider gateway C]
         simulatorC[VCR simulator C]
         gatewayC --> simulatorC
@@ -49,14 +49,14 @@ flowchart TB
     operatorC <-->|SWIM state| operatorA
 ```
 
-Only `provider-a` runs a consumer gateway. Every cluster runs a Grid operator, a provider gateway, and a VCR inference simulator. SWIM distributes provider state between the operators. Each operator reconciles that state into a versioned overlay; the consumer uses its local accepted copy.
+Only `provider-a` runs a consumer gateway. Every cluster runs an AGN Operator, a provider gateway, and a VCR inference simulator. SWIM distributes provider state between the operators. Each operator reconciles that state into a versioned overlay; the consumer uses its local accepted copy.
 
 ## Who makes each decision?
 
 ```mermaid
 flowchart LR
     state[Provider health, trust,<br/>admission, and site state]
-    grid[Grid reconciliation]
+    grid[AGN reconciliation]
     overlay[Versioned routing overlay<br/>groups + selection policy]
     praxis[Praxis intelligent_route<br/>accepted in-memory snapshot]
     provider[Selected provider gateway]
@@ -65,9 +65,9 @@ flowchart LR
     state --> grid --> overlay --> praxis --> provider --> backend
 ```
 
-Grid decides which candidates are eligible, their priority group, and the selection policy published in the overlay. Praxis chooses a candidate at request time from that already-accepted snapshot. Requests do not call Grid, Kubernetes, SWIM, or a metrics service.
+AGN decides which candidates are eligible, their priority group, and the selection policy published in the overlay. Praxis chooses a candidate at request time from that already-accepted snapshot. Requests do not call AGN, Kubernetes, SWIM, or a metrics service.
 
-The provider gateway then resolves its configured local backend. That is a separate routing boundary: Grid selects provider gateways, not individual inference replicas hidden behind them.
+The provider gateway then resolves its configured local backend. That is a separate routing boundary: AGN selects provider gateways, not individual inference replicas hidden behind them.
 
 ## Request decision flow
 
@@ -101,7 +101,7 @@ The proof uses unbound requests so session affinity cannot pin the sequence to o
 
 ## Configuration
 
-The topology configures the Grid network with an explicit policy:
+The topology configures the AI Grid Network with an explicit policy:
 
 ```yaml
 gridNetwork:
@@ -126,12 +126,12 @@ The complete environment is in [`forge.yaml`](./forge.yaml). Supporting files ar
 
 ## Run the proof
 
-Prerequisites include Docker, Kind, `kubectl`, Helm, OpenSSL, and `praxis-forge`. Build the Grid operator and Praxis AI gateway images before using the default `Never` pull policy.
+Prerequisites include Docker, Kind, `kubectl`, Helm, OpenSSL, and `praxis-forge`. Build the `grid-operator` and Praxis AI gateway images before using the default `Never` pull policy.
 
-Build `praxis-forge` and the two source images from clean Grid and AI checkouts:
+Build `praxis-forge` and the two source images from clean Grid and Praxis AI checkouts:
 
 ```console
-# From the Grid repository.
+# From the `praxis-proxy/grid` repository.
 cargo build -p forge
 docker build -f deploy/operator/Containerfile \
   -t grid-operator:provider-traffic-qualification .
@@ -230,7 +230,7 @@ sequenceDiagram
 
 ## Related documentation
 
-- [Round-robin selection in the Grid Routing Guide](../../../../docs/routing.md#3-round-robin-selection)
+- [Round-robin selection in the AGN Routing Guide](../../../../docs/routing.md#3-round-robin-selection)
 - [Routing](../../../../docs/architecture/routing.md)
 - [Provider Scoring](../../../../docs/architecture/scoring.md)
 - [Consumer Config](../../../../docs/architecture/consumer-config.md)
