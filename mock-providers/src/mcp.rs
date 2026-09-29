@@ -14,7 +14,7 @@
 
 use rmcp::{
     ServerHandler,
-    model::{ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool},
+    model::{ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool},
     service::RequestContext,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -32,8 +32,8 @@ struct FixedToolsServer {
 }
 
 impl ServerHandler for FixedToolsServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_tools(
