@@ -78,8 +78,9 @@ also settable when a deployment needs to override it.
 
 `db.type` chooses the Postgres backend, `builtin` or `external`:
 
-- `builtin`: the chart deploys its own Postgres. `db.builtin.image` and
-  `db.builtin.storage` size it, `db.builtin.auth.database` and
+- `builtin`: the chart deploys its own Postgres. `db.builtin.image` (a
+  pinned tag by default) and `db.builtin.imageDigest` choose the image,
+  `db.builtin.storage` sizes it, `db.builtin.auth.database` and
   `db.builtin.auth.username` name the database and role, and
   `db.builtin.auth.existingSecretRef` supplies the password. Its serving
   certificate is the one bootstrap issues into

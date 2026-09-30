@@ -36,7 +36,7 @@ spec:
         {{- toYaml .Values.enrollment.podSecurityContext | nindent 8 }}
       containers:
         - name: ca-bootstrap
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "grid-enrollment.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.enrollment.securityContext | nindent 12 }}

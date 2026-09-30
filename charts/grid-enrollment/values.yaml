@@ -13,6 +13,7 @@ image:
   # `enrollment bootstrap` Job (built with --features sar,bootstrap).
   repository: quay.io/praxis-proxy/grid-enrollment
   tag: ""            # defaults to .Chart.AppVersion
+  digest: ""         # sha256:<64 hex>; when set, tag is ignored
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -88,7 +89,8 @@ enrollment:
 db:
   type: builtin                      # builtin = in-chart Postgres; external = bring your own
   builtin:
-    image: quay.io/sclorg/postgresql-16-c9s
+    image: quay.io/sclorg/postgresql-16-c9s:20260923
+    imageDigest: ""                  # sha256:<64 hex>; appended as image@digest when set
     # Registry image, decoupled from image.pullPolicy so a locally-loaded app
     # image (image.pullPolicy=Never, kind/airgap) does not force Postgres to Never.
     pullPolicy: IfNotPresent

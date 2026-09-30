@@ -27,7 +27,7 @@ spec:
         # The service applies its schema on first connect, so it only needs the
         # DB reachable. External DBs are assumed already up.
         - name: wait-for-db
-          image: {{ .Values.db.builtin.image }}
+          image: {{ include "grid-enrollment.dbImage" . | quote }}
           imagePullPolicy: {{ .Values.db.builtin.pullPolicy }}
           securityContext:
             {{- toYaml .Values.enrollment.securityContext | nindent 12 }}
@@ -38,7 +38,7 @@ spec:
       {{- end }}
       containers:
         - name: enrollment
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "grid-enrollment.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.enrollment.securityContext | nindent 12 }}

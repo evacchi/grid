@@ -132,3 +132,25 @@ Secret holding DB_CONNECTION_URL. External ref wins; builtin uses the generated 
 DB_CONNECTION_URL
 {{- end }}
 {{- end }}
+
+{{/*
+Enrollment image: repository@digest when image.digest is set, else repository:tag.
+*/}}
+{{- define "grid-enrollment.image" -}}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Builtin Postgres image, pinned by imageDigest when set.
+*/}}
+{{- define "grid-enrollment.dbImage" -}}
+{{- if .Values.db.builtin.imageDigest }}
+{{- printf "%s@%s" .Values.db.builtin.image .Values.db.builtin.imageDigest }}
+{{- else }}
+{{- .Values.db.builtin.image }}
+{{- end }}
+{{- end }}

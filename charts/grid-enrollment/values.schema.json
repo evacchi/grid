@@ -7,6 +7,10 @@
       "properties": {
         "repository": { "type": "string" },
         "tag": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[0-9a-f]{64})?$"
+        },
         "pullPolicy": { "type": "string" }
       }
     },
@@ -44,6 +48,19 @@
       "type": "object",
       "properties": {
         "type": { "type": "string", "enum": ["builtin", "external"] },
+        "builtin": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "imageDigest": {
+              "type": "string",
+              "pattern": "^(sha256:[0-9a-f]{64})?$"
+            }
+          }
+        },
         "external": {
           "type": "object",
           "properties": {

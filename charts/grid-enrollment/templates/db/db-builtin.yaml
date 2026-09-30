@@ -124,7 +124,7 @@ spec:
         # root-owned and group-readable, so copy the pair into an emptyDir owned
         # by this uid with the key at 0600.
         - name: db-tls-perms
-          image: {{ .Values.db.builtin.image }}
+          image: {{ include "grid-enrollment.dbImage" . | quote }}
           imagePullPolicy: {{ .Values.db.builtin.pullPolicy }}
           command:
             - sh
@@ -139,7 +139,7 @@ spec:
       {{- end }}
       containers:
         - name: postgres
-          image: {{ .Values.db.builtin.image }}
+          image: {{ include "grid-enrollment.dbImage" . | quote }}
           imagePullPolicy: {{ .Values.db.builtin.pullPolicy }}
           ports:
             - name: postgres
