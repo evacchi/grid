@@ -12,6 +12,102 @@
       "type": "object",
       "description": "Global values Helm passes to every subchart."
     },
+    "gatewayConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Secure-by-default rendered gateway config (praxis.yaml + policy.yaml). Never emits insecure_options.",
+      "properties": {
+        "render": { "type": "boolean", "description": "Render praxis.yaml + policy.yaml from these values instead of a BYO ConfigMap." },
+        "localSite": { "type": "string", "pattern": "\\S", "maxLength": 256, "description": "Non-blank, at most 256 characters." },
+        "model": { "type": "string" },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "type": "string", "enum": ["", "none", "api-key"], "description": "Caller authentication, required when render is true. api-key needs an image that registers identity/api-key." },
+            "allowUnauthenticatedExposure": { "type": "boolean", "description": "With mode none, allow a LoadBalancer or NodePort Service." },
+            "stripAuthorization": { "type": "boolean", "description": "Remove the caller's Authorization header before routing." },
+            "validateCA": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "CA for the validate call, set as SSL_CERT_FILE (replaces the platform trust store).",
+              "properties": {
+                "configMap": { "type": "string" },
+                "secret": { "type": "string" },
+                "key": { "type": "string" },
+                "mountPath": { "type": "string" }
+              }
+            },
+            "validateUrl": { "type": "string", "pattern": "^(https://[^/?#\\s]+.*)?$" },
+            "allowPrivateEndpoint": { "type": "boolean", "description": "Sets allow_private_idp: every policy callout may reach private, loopback, and link-local addresses." },
+            "prefix": { "type": "string" },
+            "timeoutSecs": { "type": "integer" }
+          }
+        },
+        "upstreamCA": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "CA bundle for backend TLS without a per-cluster CA. Sets praxis upstream_ca_file; the api-key validate call uses the platform trust store.",
+          "properties": {
+            "secretName": { "type": "string" },
+            "key": { "type": "string" },
+            "mountPath": { "type": "string" }
+          }
+        },
+        "backends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cluster", "endpoints"],
+            "properties": {
+              "cluster": { "type": "string", "minLength": 1, "pattern": "\\S" },
+              "endpoints": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^\\S+:[0-9]+$" } },
+              "healthCheck": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": { "enum": ["http", "tcp"] },
+                  "path": { "type": "string" },
+                  "intervalMs": { "type": "integer", "minimum": 1 },
+                  "timeoutMs": { "type": "integer", "minimum": 1 },
+                  "healthyThreshold": { "type": "integer", "minimum": 1 },
+                  "unhealthyThreshold": { "type": "integer", "minimum": 1 }
+                }
+              },
+              "transport": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Upstream transport. Defaults to mutual_tls when tls.enabled, else plaintext.",
+                "properties": {
+                  "mode": { "type": "string", "enum": ["mutual_tls", "plaintext"] },
+                  "sni": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "listenerTls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional inbound TLS on the gateway listener. Default posture assumes an inbound TLS front terminates TLS.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" },
+            "mountPath": { "type": "string" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "NetworkPolicy limiting ingress to the listener port.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "from": { "type": "array", "items": { "type": "object" } }
+      }
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 1,
@@ -170,7 +266,7 @@
         },
         "name": {
           "type": "string",
-          "description": "Port name."
+          "description": "Port name. Empty: https when gatewayConfig.listenerTls.enabled, else http."
         },
         "protocol": {
           "type": "string",
