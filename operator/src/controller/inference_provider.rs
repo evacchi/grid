@@ -70,7 +70,8 @@ use crate::{
         grid_network::GridNetwork,
         grid_site::GridSite,
         inference_provider::{
-            HealthCheckConfig, InferenceProvider, InferenceProviderSpec, InferenceProviderStatus, ProviderPhase,
+            HealthCheckConfig, InferenceProvider, InferenceProviderSpec, InferenceProviderStatus, ModelDiscoveryConfig,
+            ProviderPhase,
         },
     },
     error::OperatorError,
@@ -645,6 +646,10 @@ pub(crate) fn sites_matching_selector(provider: &InferenceProvider, sites: &[Gri
     clippy::too_many_arguments,
     reason = "all parameters are distinct reconcile outputs; no logical grouping reduces them"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "constructing and comparing reconcile-owned status fields belongs with the patch"
+)]
 async fn update_status(
     provider: &InferenceProvider,
     client: &Client,
@@ -660,14 +665,23 @@ async fn update_status(
         .unwrap_or_else(|| std::process::abort());
 
     let api: Api<InferenceProvider> = Api::all(client.clone());
+    let model_discovery_url = provider.spec.model_discovery.as_ref().map(|source| match source {
+        ModelDiscoveryConfig::OpenAiModels(openai) => openai.effective_url(&provider.spec.endpoint),
+    });
     let status = InferenceProviderStatus {
         matching_sites,
+        model_discovery_error: None,
+        model_discovery_url,
         observed_generation,
         phase,
         reason,
     };
 
-    if !inference_provider_status_needs_update(provider.status.as_ref(), &status) {
+    if provider
+        .status
+        .as_ref()
+        .is_some_and(|current| current.matches_reconciler_status(&status))
+    {
         return Ok(());
     }
 
@@ -684,14 +698,6 @@ async fn update_status(
     Ok(())
 }
 
-/// Return whether the status subresource differs from the desired status.
-fn inference_provider_status_needs_update(
-    current: Option<&InferenceProviderStatus>,
-    desired: &InferenceProviderStatus,
-) -> bool {
-    current != Some(desired)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -703,21 +709,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_status_update_is_skipped_when_semantically_unchanged() {
+    fn reconciler_status_matches_only_reconciler_fields() {
         let baseline = InferenceProviderStatus {
             matching_sites: vec!["site-a".to_owned()],
+            model_discovery_error: None,
+            model_discovery_url: None,
             observed_generation: 2,
             phase: ProviderPhase::Available,
             reason: None,
         };
-        assert!(!inference_provider_status_needs_update(Some(&baseline), &baseline));
+        assert!(baseline.matches_reconciler_status(&baseline));
 
-        let changed = InferenceProviderStatus {
+        let changed_phase = InferenceProviderStatus {
             phase: ProviderPhase::Degraded,
             ..baseline.clone()
         };
-        assert!(inference_provider_status_needs_update(Some(&baseline), &changed));
-        assert!(inference_provider_status_needs_update(None, &baseline));
+        assert!(!baseline.matches_reconciler_status(&changed_phase));
+
+        let changed_discovery_error = InferenceProviderStatus {
+            model_discovery_error: Some("poll failed".to_owned()),
+            ..baseline.clone()
+        };
+        assert!(baseline.matches_reconciler_status(&changed_discovery_error));
+
+        let changed_discovery_url = InferenceProviderStatus {
+            model_discovery_url: Some("https://example.com/v1/models".to_owned()),
+            ..baseline.clone()
+        };
+        assert!(!baseline.matches_reconciler_status(&changed_discovery_url));
     }
 
     // -----------------------------------------------------------------------
@@ -2601,6 +2620,7 @@ mod tests {
                 capabilities: Vec::new(),
                 context_window: None,
             }],
+            model_discovery: None,
             provider_kind: "self_hosted".to_owned(),
             routing_cluster_ref: None,
             metrics_config: None,

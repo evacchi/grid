@@ -77,7 +77,7 @@ use operator::{
     },
     gateway,
     resources::tls_backend::{self, ServerTlsConfig},
-    swim_advertise,
+    served_models, swim_advertise,
     swim_endpoint::{SwimEndpoint, resolve_endpoint, resolve_endpoint_list_partial},
     swim_runtime::{self, RevisionLease, SwimConfig},
 };
@@ -197,6 +197,7 @@ async fn main() {
             Arc::clone(&ctx),
             client.clone(),
         ),
+        run_model_discovery(Arc::clone(&ctx), client.clone()),
     );
 
     if let Err(e) = result {
@@ -2020,6 +2021,118 @@ async fn run_local_scraper(
             }
         }
     }
+}
+
+/// Poll providers that opt into model discovery and hold what they serve.
+///
+/// Separate from reconcile: a served set must expire on its own cadence.
+async fn run_model_discovery(
+    ctx: Arc<OperatorCtx>,
+    client: Client,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = model_discovery_config();
+    tracing::info!(
+        interval_secs = config.interval.as_secs(),
+        ttl_secs = config.ttl.as_secs(),
+        "model discovery started"
+    );
+
+    let mut ticker = tokio::time::interval(config.interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    #[expect(
+        clippy::infinite_loop,
+        reason = "runs for the process lifetime alongside the controllers"
+    )]
+    loop {
+        ticker.tick().await;
+        if let Err(error) = grid_network::refresh_served_models(&ctx, &client, &config).await {
+            tracing::warn!(%error, "model discovery round failed");
+        }
+    }
+}
+
+/// Maximum amount of time to retain a discovered model set.
+const MAX_MODEL_DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(365 * 24 * 60 * 60);
+
+/// Maximum delay between model-discovery rounds.
+const MAX_MODEL_DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Maximum time allowed for one model-discovery request.
+const MAX_MODEL_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Discovery cadence from `GRID_MODEL_DISCOVERY_*`.
+///
+/// Interval and timeout are bounded; the TTL covers both and is capped at one
+/// year.
+fn model_discovery_config() -> served_models::DiscoveryConfig {
+    let defaults = served_models::DiscoveryConfig::default();
+    let interval = bounded_discovery_duration(
+        "GRID_MODEL_DISCOVERY_INTERVAL_SECS",
+        defaults.interval,
+        MAX_MODEL_DISCOVERY_INTERVAL,
+    );
+    let timeout = bounded_discovery_duration(
+        "GRID_MODEL_DISCOVERY_TIMEOUT_SECS",
+        defaults.timeout,
+        MAX_MODEL_DISCOVERY_TIMEOUT,
+    );
+    let ttl = bounded_model_discovery_ttl(interval, timeout, defaults.ttl);
+
+    served_models::DiscoveryConfig {
+        interval,
+        timeout,
+        ttl,
+        concurrency: parse_env_or("GRID_MODEL_DISCOVERY_CONCURRENCY", defaults.concurrency),
+    }
+}
+
+/// Derive a TTL that covers one poll round and remains within its supported cap.
+fn bounded_model_discovery_ttl(
+    interval: std::time::Duration,
+    timeout: std::time::Duration,
+    default: std::time::Duration,
+) -> std::time::Duration {
+    let requested_ttl =
+        std::time::Duration::from_secs(parse_env_or("GRID_MODEL_DISCOVERY_TTL_SECS", default.as_secs()).max(1));
+    let minimum_ttl = interval.saturating_add(timeout);
+    let unclamped_ttl = requested_ttl.max(minimum_ttl);
+    let ttl = unclamped_ttl.min(MAX_MODEL_DISCOVERY_TTL);
+    if unclamped_ttl > MAX_MODEL_DISCOVERY_TTL {
+        tracing::warn!(
+            requested_ttl_secs = requested_ttl.as_secs(),
+            minimum_ttl_secs = minimum_ttl.as_secs(),
+            applied_ttl_secs = ttl.as_secs(),
+            max_ttl_secs = MAX_MODEL_DISCOVERY_TTL.as_secs(),
+            "model discovery TTL exceeds the supported maximum; clamping"
+        );
+    }
+    ttl
+}
+
+/// Parse one discovery duration, enforcing a positive value and maximum.
+fn bounded_discovery_duration(
+    name: &str,
+    default: std::time::Duration,
+    maximum: std::time::Duration,
+) -> std::time::Duration {
+    let requested = std::time::Duration::from_secs(parse_env_or(name, default.as_secs()).max(1));
+    if requested > maximum {
+        tracing::warn!(
+            setting = name,
+            requested_secs = requested.as_secs(),
+            applied_secs = maximum.as_secs(),
+            "model discovery duration exceeds the supported maximum; clamping"
+        );
+    }
+    requested.min(maximum)
+}
+
+/// Parse an environment variable, using `default` when it is absent or invalid.
+fn parse_env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Poll every alive peer's signals endpoint on a coarse interval, fail closed.
