@@ -447,6 +447,7 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -906,6 +907,7 @@ dependencies = [
  "kube",
  "openssl",
  "rcgen",
+ "reqwest",
  "ring",
  "rustls",
  "serde",
@@ -919,6 +921,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
