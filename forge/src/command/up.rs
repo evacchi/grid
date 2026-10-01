@@ -891,11 +891,11 @@ spec:
         }
     }
 
-    /// Formatted Docker IPAM response for the test network.
+    /// Docker `network inspect` JSON for the test network.
     fn network_cidr(cidr: &str) -> CommandOutput {
         CommandOutput {
             status: 0,
-            stdout: format!(r#"[{{"Subnet":"{cidr}","Gateway":"172.18.0.1"}}]"#),
+            stdout: format!(r#"{{"IPAM":{{"Config":[{{"Subnet":"{cidr}","Gateway":"172.18.0.1"}}]}}}}"#),
             stderr: String::new(),
         }
     }
@@ -908,7 +908,7 @@ spec:
         runner.respond("docker version", docker_ok());
         runner.respond("docker network inspect test-net", net_not_found());
         runner.respond(
-            "docker network inspect test-net --format {{json .IPAM.Config}}",
+            "docker network inspect test-net --format {{json .}}",
             network_cidr("172.18.0.0/16"),
         );
         runner.respond("docker", empty_ok());
@@ -1022,7 +1022,7 @@ spec:
         runner.respond("docker version", docker_ok());
         runner.respond("docker network inspect test-net", net_not_found());
         runner.respond(
-            "docker network inspect test-net --format {{json .IPAM.Config}}",
+            "docker network inspect test-net --format {{json .}}",
             network_cidr("172.18.0.0/16"),
         );
         runner.respond("docker", empty_ok());
@@ -1076,7 +1076,7 @@ spec:
         runner.respond("docker version", docker_ok());
         runner.respond("docker network inspect test-net", net_not_found());
         runner.respond(
-            "docker network inspect test-net --format {{json .IPAM.Config}}",
+            "docker network inspect test-net --format {{json .}}",
             network_cidr("172.18.0.0/16"),
         );
         runner.respond("docker", empty_ok());

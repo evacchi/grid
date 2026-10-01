@@ -403,15 +403,10 @@ pub fn parse_network_cidr(inspect_output: &str) -> Result<String, ForgeError> {
     extract_subnet_from_ipam(entry)
 }
 
-/// Navigate the nested IPAM config to extract and validate the first subnet.
+/// Extract and validate the first IPv4 subnet of an inspected network.
 fn extract_subnet_from_ipam(entry: &serde_json::Value) -> Result<String, ForgeError> {
-    let subnet = entry
-        .get("IPAM")
-        .and_then(|ipam| ipam.get("Config"))
-        .and_then(|config| config.get(0))
-        .and_then(|cfg| cfg.get("Subnet"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| cmd_error("network inspect", "no Subnet in IPAM.Config"))?;
+    let subnet = crate::networking::first_ipv4_subnet(entry)
+        .ok_or_else(|| cmd_error("network inspect", "no IPv4 subnet in IPAM.Config or subnets"))?;
     parse_cidr_parts(subnet)
         .map_err(|_err| cmd_error("network inspect", &format!("invalid CIDR in IPAM.Config: {subnet:?}")))?;
     Ok(subnet.to_owned())
@@ -784,6 +779,13 @@ mod tests {
         let result = parse_network_cidr(input).unwrap_or_else(|_| std::process::abort());
         assert_eq!(result, "172.18.0.0/16", "should extract subnet from IPAM.Config");
         assert!(parse_network_cidr("[]").is_err(), "empty array should fail");
+    }
+
+    #[test]
+    fn parse_network_cidr_reads_podman_subnets() {
+        let input = r#"[{"name":"kind","subnets":[{"subnet":"fc00:f853:ccd:e793::/64"},{"subnet":"10.89.0.0/24"}]}]"#;
+        let result = parse_network_cidr(input).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(result, "10.89.0.0/24", "first IPv4 podman subnet");
     }
 
     #[test]
