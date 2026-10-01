@@ -363,13 +363,13 @@ before the UDP socket processes packets, but environment variables are visible
 to same-host process inspectors.  Use Kubernetes Secret references for the
 production configuration path.
 
-**Startup plaintext window:** when the operator process starts, the SWIM UDP
-socket begins receiving immediately.  If only `swimKeyRef` is configured (no
-`GRID_SWIM_ENCRYPT_KEY` env var), the runtime has no key until the first
-`GridNetwork` reconcile loads it from the Secret.  During this window — typically
-a few seconds — the SWIM socket accepts plaintext packets.  The env var path
-closes this window at startup because the key is loaded before the UDP socket
-begins processing.  This is a known limitation of the CRD-only key path.
+**Startup hold:** the operator reads the `GridNetwork` key before its first
+SWIM send. Until a key loads, SWIM sends and receives nothing. Only a network
+that declares no `swimKeyRef` releases the hold to plaintext. The hold also
+covers the time before any network exists. Set `GRID_SWIM_REQUIRE_KEY=false`
+to skip that part. If the startup list fails, the operator retries it in the
+background. A malformed `GRID_SWIM_ENCRYPT_KEY` stops the operator. The
+`grid_swim_key_pending` gauge reads 1 while held.
 
 **What SWIM encryption protects:** gossip membership messages, gateway address
 and public certificate broadcasts, and CRDT provider state.  It does not protect
@@ -377,6 +377,9 @@ data-plane request traffic (that is Praxis/Praxis AI's responsibility).
 
 **Key rotation:** changing the key requires an operator restart.  Multi-key
 keyring support (allowing zero-downtime rotation) is not yet implemented.
+
+**What the key does not stop:** any holder of the SWIM key can still mark a
+site down or evict it from membership. Identities are not yet signed per site.
 
 ## Grid mTLS Identity
 
@@ -397,6 +400,35 @@ pinning (`cert_digest` field on `trusted_peers`) once
 cert identities are stable, as organization matching
 is weaker — any cert signed by a trusted CA with the
 correct `O=` value is accepted.
+
+Site certificates follow the X.509-SVID leaf profile. Each carries a
+critical CA:FALSE basic constraint and a critical key usage of digital
+signature only. Each also carries server and client authentication, one
+SPIFFE URI SAN, and the site's DNS SAN. A provider gateway in SPIFFE mode refuses a leaf without
+those extensions. Certificates issued before this profile lack them, so
+re-enroll those sites before switching a provider to SPIFFE mode.
+
+SPIFFE mode, `spec.peerTrust.mode: spiffe` on the `GridNetwork`, reads no pins.
+It admits any site the Grid CA signed, auto-discovered sites included, and it
+cannot revoke one short of rotating the Grid CA and the SWIM key.
+
+On the signals listener, only this site's current leaf, matched by digest,
+reads unscoped as the co-located gateway, in either mode. The listener refuses
+a reissued leaf for the same site. In SPIFFE mode the operator polls only sites
+it holds a `GridSite` for. It also waits for encrypted SWIM gossip, since gossip
+carries the addresses it dials. The listener caps handshakes per source address
+and per global IPv6 /64 and /48. It names the caller before it counts the
+connection. It closes a caller it cannot name right after the handshake. It
+caps authenticated connections per named site and answers 503 past that cap.
+Peers together never hold the last eight connections, which stay free for the
+co-located gateway. The caps start over when the listener reloads its TLS
+material. It closes a connection whose response write stalls or that outlives
+five minutes. Restrict who can reach the listener with
+`loadBalancerSourceRanges` on its Service or with a NetworkPolicy.
+
+The gateway polls peers from the serving config the operator renders. It
+always checks the peer's SPIFFE ID. Under pin trust the operator also renders
+each peer's declared pins, and the gateway refuses a leaf that matches none.
 
 ### Authentication vs authorization
 
