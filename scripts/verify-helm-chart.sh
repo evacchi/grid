@@ -98,17 +98,31 @@ fi
 # ── CRD synchronization ─────────────────────────────────────────────
 echo ""
 echo "=== CRD synchronization ==="
+# Chart CRDs are deploy/crds plus the chart's lifecycle annotations.
+crd_body() { yq -o json 'del(.metadata.annotations)' | jq -S .; }
 for crd in agenttoolprovider gridnetwork gridsite inferenceprovider; do
-  if diff -q "$DEPLOY_CRDS/${crd}.yaml" "$CHART_DIR/crds/${crd}.yaml" >/dev/null 2>&1; then
+  if render v-crds "$CHART_DIR" --show-only "templates/crds/${crd}.yaml" \
+    && diff -q <(crd_body <<<"$RENDERED") <(crd_body <"$DEPLOY_CRDS/${crd}.yaml") >/dev/null; then
     pass "crd sync: ${crd}.yaml"
   else
-    fail "crd sync: ${crd}.yaml differs from $DEPLOY_CRDS/${crd}.yaml"
+    fail "crd sync: templates/crds/${crd}.yaml differs from $DEPLOY_CRDS/${crd}.yaml"
   fi
 done
+CRD_TEMPLATES=("$CHART_DIR"/templates/crds/*.yaml)
+if [ "${#CRD_TEMPLATES[@]}" -eq 4 ] && [ ! -d "$CHART_DIR/crds" ]; then
+  pass "crds ship only as templates gated by crds.enabled"
+else
+  fail "unexpected CRD files: ${CRD_TEMPLATES[*]} $([ -d "$CHART_DIR/crds" ] && echo "$CHART_DIR/crds")"
+fi
+if render v-crds "$CHART_DIR" --set crds.enabled=false && ! grep -q 'kind: CustomResourceDefinition' <<<"$RENDERED"; then
+  pass "crds.enabled=false renders no CRD"
+else
+  fail "crds.enabled=false still renders a CRD"
+fi
 
 # A CRD missing from the kustomization is silently dropped by kustomize consumers.
 listed=$(sed -n 's/^  - //p' "$DEPLOY_CRDS/kustomization.yaml" | sort)
-present=$(cd "$DEPLOY_CRDS" && ls -1 *.yaml | grep -vx kustomization.yaml | sort)
+present=$(cd "$DEPLOY_CRDS" && printf '%s\n' *.yaml | grep -vx kustomization.yaml | sort)
 if [ "$listed" = "$present" ]; then
   pass "crd kustomization lists every CRD"
 else
@@ -138,6 +152,17 @@ try_template "$CHART_DIR" "SWIM ClusterIP" \
 try_template "$CHART_DIR" "SWIM LoadBalancer" \
   --set swim.service.enabled=true --set swim.service.type=LoadBalancer \
   --set swim.service.loadBalancerIP=10.0.0.1
+SIG_RENDER=$(helm template v-sig "$CHART_DIR" --namespace grid-system --set signals.enabled=true \
+  --set swim.service.enabled=true --set swim.service.type=LoadBalancer 2>&1 || true)
+if grep -q 'value: "v-sig-grid-operator-swim.grid-system.svc:9091"' <<<"$SIG_RENDER" \
+  && grep -A3 -- '- name: signals' <<<"$SIG_RENDER" | grep -q 'targetPort: signals'; then
+  pass "signals: TCP port on the SWIM Service and the local gateway address"
+else
+  fail "signals: unexpected render: $(grep -E 'SIGNALS|signals|Error' <<<"$SIG_RENDER" | head -3 | tr '\n' ' ')"
+fi
+try_reject_msg "$CHART_DIR" "signals without the SWIM Service" "needs swim.service.enabled" --set signals.enabled=true
+# --reuse-values from a release predating these keys leaves them absent.
+try_template "$CHART_DIR" "absent signals map" --set signals=null
 try_template "$CHART_DIR" "SWIM advertise address" \
   --set swim.service.enabled=true --set swim.service.type=LoadBalancer \
   --set swim.advertiseAddress=swim.example.com:7946
@@ -149,9 +174,13 @@ try_template "$CHART_DIR" "auto-enroll with a ConfigMap CA" "${ENROLL_SET[@]}" \
   --set enrollment.caBundle.configMap=grid-ca
 try_template "$CHART_DIR" "auto-enroll with a Secret CA" "${ENROLL_SET[@]}" \
   --set enrollment.caBundle.secret=grid-ca-bundle
-try_reject_msg "$CHART_DIR" "auto-enroll without a CA bundle" 'enrollment.caBundle needs a configMap or a secret' "${ENROLL_SET[@]}"
-try_reject_msg "$CHART_DIR" "auto-enroll with a nulled CA bundle" 'enrollment.caBundle needs a configMap or a secret' \
-  "${ENROLL_SET[@]}" --set enrollment.caBundle=null
+for nulled in "" --set=enrollment.caBundle=null; do
+  if render v-enroll "$CHART_DIR" "${ENROLL_SET[@]}" ${nulled:+"$nulled"} && grep -q 'secretName: "grid-ca-bundle"' <<<"$RENDERED"; then
+    pass "auto-enroll without a CA bundle pins the grid-ca-bundle Secret ${nulled:-(unset)}"
+  else
+    fail "auto-enroll without a CA bundle did not default to grid-ca-bundle ${nulled:-(unset)}"
+  fi
+done
 try_reject_msg "$CHART_DIR" "auto-enroll site name past 51 characters" 'siteName' "${ENROLL_SET[@]}" \
   --set enrollment.caBundle.secret=grid-ca-bundle --set enrollment.siteName="$(printf 'a%.0s' {1..52})"
 try_reject_msg "$CHART_DIR" "auto-enroll over plaintext" 'enrollment[./]url' "${ENROLL_SET[@]}" \
@@ -311,8 +340,8 @@ TGZ=$(echo "$PKG_OUT" | grep -oP '/tmp/\S+\.tgz')
 if [ -f "$TGZ" ]; then
   pass "helm package: $(basename "$TGZ") ($(stat -c%s "$TGZ") bytes)"
   CONTENTS=$(tar tzf "$TGZ" 2>&1)
-  for f in Chart.yaml values.yaml values.schema.json templates/deployment.yaml crds/agenttoolprovider.yaml \
-    crds/gridnetwork.yaml crds/gridsite.yaml crds/inferenceprovider.yaml; do
+  for f in Chart.yaml values.yaml values.schema.json templates/deployment.yaml templates/crds/agenttoolprovider.yaml \
+    templates/crds/gridnetwork.yaml templates/crds/gridsite.yaml templates/crds/inferenceprovider.yaml; do
     if echo "$CONTENTS" | grep -q "$f"; then
       pass "package contains: $f"
     else
@@ -420,6 +449,33 @@ for f in "$EXAMPLE_DIR"/combined-site/values/*-grid-mock-providers.yaml; do
   try_template "charts/grid-mock-providers" "$LABEL" --namespace grid-system -f "$f"
 done
 
+# Hub and site example: each values file as the README installs it.
+HS_VALUES="examples/helm/hub-site/values"
+HS_DIGEST=$(printf 'a%.0s' $(seq 64))
+try_template "charts/grid-enrollment" "example hub-site hub-grid-enrollment" --namespace grid \
+  -f "$HS_VALUES/hub-grid-enrollment.yaml"
+try_template "charts/grid-enrollment" "example hub-site hub-grid-enrollment route" --namespace grid \
+  -f "$HS_VALUES/hub-grid-enrollment.yaml" --set route.enabled=true --set-string route.host=enroll.apps.example.com
+# The digest placeholders fail closed until replaced.
+HS_PINNED=(--set "peers.hub.digest=$HS_DIGEST")
+HS_GW_PINNED=(--set "gatewayConfig.peerTrust.digest=$HS_DIGEST")
+for side in hub site; do
+  try_template "$CHART_DIR" "example hub-site $side-grid-operator" --namespace grid -f "$HS_VALUES/$side-grid-operator.yaml"
+done
+try_template "charts/grid-site" "example hub-site hub-grid-site" --namespace grid -f "$HS_VALUES/hub-grid-site.yaml"
+try_template "charts/grid-site" "example hub-site site-grid-site" --namespace grid -f "$HS_VALUES/site-grid-site.yaml" \
+  "${HS_PINNED[@]}"
+try_template "$GW_DIR" "example hub-site hub-praxis-gateway" --namespace grid -f "$HS_VALUES/hub-praxis-gateway.yaml"
+try_template "$GW_DIR" "example hub-site site-praxis-gateway" --namespace grid -f "$HS_VALUES/site-praxis-gateway.yaml" \
+  "${HS_GW_PINNED[@]}"
+try_template "$GW_DIR" "example hub-site site-praxis-gateway spiffe" --namespace grid \
+  -f "$HS_VALUES/site-praxis-gateway.yaml" --set gatewayConfig.peerTrust.mode=spiffe --set gatewayConfig.peerTrust.digest="" \
+  --set gatewayConfig.peerTrust.spiffeId=spiffe://grid.internal/site/hub
+try_reject_msg "$GW_DIR" "example hub-site site gateway with the digest placeholder" "digest" --namespace grid \
+  -f "$HS_VALUES/site-praxis-gateway.yaml"
+try_reject_msg "charts/grid-site" "example hub-site site grid-site with the digest placeholder" "digest" \
+  --namespace grid -f "$HS_VALUES/site-grid-site.yaml"
+
 # ── Verify fullnameOverride ──────────────────────────────────────────
 echo ""
 echo "=== fullnameOverride (gateway) ==="
@@ -465,16 +521,16 @@ try_reject "$GW_DIR" "unknown key (gw)" "${GW_REQ[@]}" --set typoField=true
 try_template "$GW_DIR" "subchart keys (gw)" "${GW_REQ[@]}" --set enabled=true --set global.foo=bar
 try_reject "$GW_DIR" "runAsNonRoot override" "${GW_REQ[@]}" --set podSecurityContext.runAsNonRoot=false
 try_reject "$GW_DIR" "overlay enabled no name" "${GW_REQ[@]}" --set overlay.enabled=true
-try_reject "$GW_DIR" "tls enabled no secret" "${GW_REQ[@]}" --set tls.enabled=true
+try_reject "$GW_DIR" "tls enabled no secret" "${GW_REQ[@]}" --set tls.enabled=true --set tls.existingSecret=""
 
 # ── Secure gateway config (render) ──────────────────────────────────
-GW_RENDER=(--set gatewayConfig.render=true --set gatewayConfig.model=q --set gatewayConfig.auth.mode=none
+GW_RENDER=(--set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.model=q --set gatewayConfig.auth.mode=none
   --set "gatewayConfig.backends[0].cluster=a" --set "gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000"
   --set "gatewayConfig.backends[0].transport.mode=plaintext")
 echo ""
 echo "=== Secure gateway config (gateway) ==="
 SECURE_ARGS=(
-  --set gatewayConfig.render=true
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub
   --set gatewayConfig.model=qwen3
   --set gatewayConfig.auth.mode=api-key --set image.tag=verify-api-key
   --set gatewayConfig.auth.validateUrl=https://maas-api.svc:8443/internal/v1/api-keys/validate
@@ -483,7 +539,7 @@ SECURE_ARGS=(
   --set gatewayConfig.listenerTls.enabled=true --set gatewayConfig.listenerTls.existingSecret=listener-cert
   --set "gatewayConfig.backends[0].cluster=site-a"
   --set "gatewayConfig.backends[0].endpoints[0]=172.30.202.42:8000"
-  --set "gatewayConfig.backends[0].transport.sni=site-a.grid.internal"
+  --set "gatewayConfig.backends[0].transport.sni=site-a.grid.internal" --set "gatewayConfig.backends[0].site=site-a"
   --set "gatewayConfig.backends[1].cluster=site-b"
   --set "gatewayConfig.backends[1].endpoints[0]=172.30.181.254:8000"
   --set "gatewayConfig.backends[1].transport.mode=plaintext"
@@ -579,7 +635,7 @@ try_reject_msg "$GW_DIR" "http validateUrl (gw)" "https://" "${GW_RENDER[@]}" \
 try_reject_msg "$GW_DIR" "api-key without validateUrl (gw)" "validateUrl is required" "${GW_RENDER[@]}" \
   --set gatewayConfig.auth.mode=api-key --namespace grid-system
 try_reject_msg "$GW_DIR" "render without auth.mode (gw)" "auth.mode is required" \
-  --set gatewayConfig.render=true --set gatewayConfig.model=q --set "gatewayConfig.backends[0].cluster=a" \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.model=q --set "gatewayConfig.backends[0].cluster=a" \
   --set "gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000" --namespace grid-system
 try_reject_msg "$GW_DIR" "none + LoadBalancer (gw)" "exposes unauthenticated inference" "${GW_RENDER[@]}" --set service.type=LoadBalancer --namespace grid-system
 try_reject_msg "$GW_DIR" "none + NodePort (gw)" "exposes unauthenticated inference" "${GW_RENDER[@]}" --set service.type=NodePort --namespace grid-system
@@ -595,7 +651,7 @@ try_reject_msg "$GW_DIR" "networkPolicy from ipBlock ::/0 (gw)" "admits every ad
   --namespace grid-system
 BK1=(--set "gatewayConfig.backends[0].cluster=a" --set "gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000"
   --set "gatewayConfig.backends[0].transport.mode=plaintext")
-R0=(--set gatewayConfig.render=true --set gatewayConfig.model=q --set gatewayConfig.auth.mode=none --namespace grid-system)
+R0=(--set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.model=q --set gatewayConfig.auth.mode=none --namespace grid-system)
 try_reject_msg "$GW_DIR" "backend without cluster (gw)" "backends[./]0.*cluster" "${R0[@]}" \
   --set "gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000"
 try_reject_msg "$GW_DIR" "backend without endpoints (gw)" "backends[./]0.*endpoints" "${R0[@]}" \
@@ -643,24 +699,24 @@ else
   pass "an httpGet readiness probe drops the default tcpSocket"
 fi
 try_reject_msg "$GW_DIR" "render without model (gw)" "gatewayConfig.model is required" \
-  --set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.backends[0].cluster=a \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.backends[0].cluster=a \
   --set gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000 --namespace grid-system
 try_reject_msg "$GW_DIR" "render without backends (gw)" "gatewayConfig.backends needs at least one backend" \
-  --set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q --namespace grid-system
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q --namespace grid-system
 try_reject_msg "$GW_DIR" "mutual_tls without sni (gw)" "sets no transport.sni" \
-  --set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
   --set tls.enabled=true --set tls.existingSecret=id \
   --set gatewayConfig.backends[0].cluster=a --set gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000 --namespace grid-system
 try_reject_msg "$GW_DIR" "mutual_tls without grid identity (gw)" "tls.enabled is false" \
-  --set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
   --set gatewayConfig.backends[0].cluster=a --set gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000 \
   --set gatewayConfig.backends[0].transport.mode=mutual_tls --set gatewayConfig.backends[0].transport.sni=a.grid --namespace grid-system
 try_reject_msg "$GW_DIR" "plaintext with sni (gw)" "sni belongs to a TLS transport" \
-  --set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q \
   --set gatewayConfig.backends[0].cluster=a --set gatewayConfig.backends[0].endpoints[0]=1.2.3.4:8000 \
   --set gatewayConfig.backends[0].transport.mode=plaintext --set gatewayConfig.backends[0].transport.sni=x --namespace grid-system
 # tls transport: server-verified backend with no client cert (a KServe workload).
-TLS1=(--set gatewayConfig.render=true --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q
+TLS1=(--set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q
   --set "gatewayConfig.backends[0].cluster=kserve" --set "gatewayConfig.backends[0].transport.mode=tls" --namespace grid-system)
 TLS_RENDER=$(helm template v-tls "$GW_DIR" "${TLS1[@]}" --set "gatewayConfig.backends[0].endpoints[0]=172.30.1.2:8000" \
   --set "gatewayConfig.backends[0].transport.sni=qwen3-kserve-workload-svc.llm.svc" \
@@ -690,6 +746,110 @@ try_reject_msg "$GW_DIR" "tls backend: empty ca (gw)" "transport[./]ca.*oneOf" "
 try_reject_msg "$GW_DIR" "transport.ca outside tls (gw)" "transport/mode': value must be 'tls'|transport: Must validate \"then\"" "${TLS1[@]}" \
   --set "gatewayConfig.backends[0].endpoints[0]=172.30.1.2:8000" --set "gatewayConfig.backends[0].transport.mode=plaintext" \
   --set "gatewayConfig.backends[0].transport.ca.configMap=a"
+
+# trustPrivate: the FQDN endpoint and SNI drop the root dot.
+TRUST_RENDER=$(helm template v-trust "$GW_DIR" "${TLS1[@]}" \
+  --set "gatewayConfig.backends[0].endpoints[0]=m.ns.svc.cluster.local.:8000" --set "gatewayConfig.backends[0].trustPrivate=true" 2>&1 || true)
+if grep -q '"m.ns.svc.cluster.local"$' <<<"$TRUST_RENDER" && grep -q 'sni: "m.ns.svc.cluster.local"' <<<"$TRUST_RENDER"; then
+  pass "trustPrivate: lists the FQDN without its root dot and derives an undotted sni"
+else
+  fail "trustPrivate: want the undotted trust entry and sni, got: $(grep -E 'sni:|trusted|svc' <<<"$TRUST_RENDER" | head -3 | tr '\n' ' ')"
+fi
+try_reject_msg "$GW_DIR" "trustPrivate with only IP endpoints (gw)" "no hostname endpoint" "${TLS1[@]}" \
+  --set "gatewayConfig.backends[0].endpoints[0]=172.30.1.2:8000" --set "gatewayConfig.backends[0].transport.sni=h" --set "gatewayConfig.backends[0].trustPrivate=true"
+try_reject_msg "$GW_DIR" "trustPrivate over plaintext without allowPlaintextTrust (gw)" "allowPlaintextTrust" \
+  --set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --set gatewayConfig.model=q --namespace grid-system \
+  --set "gatewayConfig.backends[0].cluster=p" --set "gatewayConfig.backends[0].transport.mode=plaintext" \
+  --set "gatewayConfig.backends[0].endpoints[0]=m.ns.svc.cluster.local.:8000" --set "gatewayConfig.backends[0].trustPrivate=true"
+
+# provider role: serves the grid identity, requires a client cert, routes to one local backend.
+DIGEST=$(printf 'a%.0s' $(seq 64))
+PROVIDER=(--set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.role=provider --namespace grid-system
+  --set image.flavor=grid-gateway
+  --set tls.enabled=true --set tls.existingSecret=grid-site-identity --set tls.caSecret=grid-ca
+  --set "gatewayConfig.backends[0].cluster=local" --set "gatewayConfig.backends[0].transport.mode=plaintext"
+  --set "gatewayConfig.backends[0].endpoints[0]=m.ns.svc.cluster.local.:8000" --set "gatewayConfig.backends[0].trustPrivate=true"
+  --set "gatewayConfig.backends[0].allowPlaintextTrust=true" --set-json "gatewayConfig.peerTrust.certDigests=[\"$DIGEST\"]")
+SPIFFE=(--set gatewayConfig.peerTrust.mode=spiffe --set gatewayConfig.peerTrust.certDigests=null)
+PROV_RENDER=$(helm template v-prov "$GW_DIR" "${PROVIDER[@]}" 2>&1 || true)
+if grep -q 'client_cert_mode: require$' <<<"$PROV_RENDER" && grep -q "cert_digest: \"$DIGEST\"" <<<"$PROV_RENDER" \
+  && grep -q 'name: "grid-ca"' <<<"$PROV_RENDER" && ! grep -q 'intelligent_route' <<<"$PROV_RENDER"; then
+  pass "provider pin: Grid-CA client auth plus the certificate digest allowlist"
+else
+  fail "provider pin: unexpected render: $(grep -E 'client_cert_mode|cert_digest|Error' <<<"$PROV_RENDER" | head -3 | tr '\n' ' ')"
+fi
+if grep -q -- '- path: "/v1/chat/completions"' <<<"$PROV_RENDER" && ! grep -q 'path_prefix' <<<"$PROV_RENDER"; then
+  pass "provider: routes only the allowed inference paths"
+else
+  fail "provider: routes are not limited to allowedPaths"
+fi
+SPIFFE_RENDER=$(helm template v-prov "$GW_DIR" "${PROVIDER[@]}" "${SPIFFE[@]}" \
+  --set "gatewayConfig.peerTrust.spiffeIds[0]=spiffe://grid.internal/site/hub" 2>&1 || true)
+if grep -q 'client_cert_mode: require_named$' <<<"$SPIFFE_RENDER" && grep -q -- '- "spiffe://grid.internal/site/hub"' <<<"$SPIFFE_RENDER" \
+  && ! grep -q 'peer_identity_trust' <<<"$SPIFFE_RENDER"; then
+  pass "provider spiffe: require_named with the SPIFFE allowlist and no pins"
+else
+  fail "provider spiffe: unexpected render: $(grep -E 'client_cert_mode|spiffe|Error' <<<"$SPIFFE_RENDER" | head -3 | tr '\n' ' ')"
+fi
+if helm template v-prov "$GW_DIR" "${PROVIDER[@]}" "${SPIFFE[@]}" --set gatewayConfig.peerTrust.allowAnyGridSite=true 2>&1 \
+  | grep -q 'client_cert_mode: require_named$'; then
+  pass "provider spiffe: allowAnyGridSite accepts any Grid-CA site explicitly"
+else
+  fail "provider spiffe: allowAnyGridSite did not render require_named"
+fi
+try_reject_msg "$GW_DIR" "rendered config without localSite (gw)" "localSite" "${PROVIDER[@]}" \
+  --set gatewayConfig.localSite=""
+try_reject_msg "$GW_DIR" "provider spiffe without an allowlist (gw)" "peerTrust" "${PROVIDER[@]}" "${SPIFFE[@]}"
+try_reject_msg "$GW_DIR" "provider pin without digests (gw)" "peerTrust" "${PROVIDER[@]}" --set gatewayConfig.peerTrust.certDigests=null
+# The template guards hold without the schema (Helm 3.16+ --skip-schema-validation).
+try_reject_msg "$GW_DIR" "provider spiffe without an allowlist, schema skipped (gw)" "allowAnyGridSite true" \
+  --skip-schema-validation "${PROVIDER[@]}" "${SPIFFE[@]}"
+try_reject_msg "$GW_DIR" "provider pin without digests, schema skipped (gw)" "pin mode needs certDigests" \
+  --skip-schema-validation "${PROVIDER[@]}" --set gatewayConfig.peerTrust.certDigests=null
+try_reject_msg "$GW_DIR" "provider on the ai image flavor (gw)" "image.flavor grid-gateway" "${PROVIDER[@]}" --set image.flavor=ai
+try_reject_msg "$GW_DIR" "provider pin with a malformed digest (gw)" "certDigests" "${PROVIDER[@]}" \
+  --set-json 'gatewayConfig.peerTrust.certDigests=["ABC"]'
+try_reject_msg "$GW_DIR" "connect timeout above the total (gw)" "must not exceed totalConnectTimeoutMs" "${PROVIDER[@]}" \
+  --set "gatewayConfig.backends[0].connectTimeoutMs=6000" --set "gatewayConfig.backends[0].totalConnectTimeoutMs=5000"
+if render v-prov "$GW_DIR" "${PROVIDER[@]}" --set tls.caSecret="" && grep -q 'name: "grid-ca"' <<<"$RENDERED"; then
+  pass "provider without tls.caSecret projects grid-ca (gw)"
+else
+  fail "provider without tls.caSecret did not default to grid-ca (gw)"
+fi
+try_reject_msg "$GW_DIR" "provider with two backends (gw)" "exactly one local backend" "${PROVIDER[@]}" \
+  --set "gatewayConfig.backends[1].cluster=two" --set "gatewayConfig.backends[1].transport.mode=plaintext" --set "gatewayConfig.backends[1].endpoints[0]=10.0.0.2:80"
+try_reject_msg "$GW_DIR" "peerTrust.rateLimit missing burst (gw)" "burst" "${PROVIDER[@]}" --set gatewayConfig.peerTrust.rateLimit.rate=5
+
+# gridServing: operator serving config mounted as a directory, routed by grid_site_route.
+SERVING=(--set gatewayConfig.render=true --set gatewayConfig.localSite=hub --set gatewayConfig.auth.mode=none --namespace grid-system
+  --set image.repository=quay.io/example/grid-gateway --set image.tag=t --set image.flavor=grid-gateway
+  --set tls.enabled=true --set tls.existingSecret=grid-site-identity --set tls.caSecret=grid-ca
+  --set gridServing.enabled=true --set gridServing.configMap=grid-serving-grid-gw
+  --set "gatewayConfig.backends[0].cluster=pool-b" --set "gatewayConfig.backends[0].endpoints[0]=203.0.113.7:8443"
+  --set "gatewayConfig.backends[0].transport.sni=site-b.grid.internal")
+SERV_RENDER=$(helm template v-serv "$GW_DIR" "${SERVING[@]}" 2>&1 || true)
+if grep -q 'filter: grid_site_route' <<<"$SERV_RENDER" && ! grep -q 'intelligent_route' <<<"$SERV_RENDER" \
+  && grep -q 'value: "/etc/praxis/grid-serving/serving-config.json"' <<<"$SERV_RENDER" \
+  && grep -q 'name: "grid-serving-grid-gw"' <<<"$SERV_RENDER" && ! grep -q 'subPath' <<<"$SERV_RENDER"; then
+  pass "gridServing: grid_site_route, GRID_SERVING_CONFIG, directory mount"
+else
+  fail "gridServing: unexpected render: $(grep -E 'route|GRID_SERVING|grid-serving|Error' <<<"$SERV_RENDER" | head -3 | tr '\n' ' ')"
+fi
+try_reject_msg "$GW_DIR" "gridServing without network or configMap (gw)" "gridServing.network" "${SERVING[@]}" --set gridServing.configMap=""
+if helm template v-serv "$GW_DIR" "${SERVING[@]}" --set gridServing.configMap="" --set gridServing.network=grid \
+  --set fullnameOverride=gw 2>&1 | grep -q 'name: "grid-serving-grid-gw"'; then
+  pass "gridServing: derives the operator's ConfigMap name from network and gatewayRef"
+else
+  fail "gridServing: did not derive grid-serving-grid-gw"
+fi
+try_reject_msg "$GW_DIR" "gridServing without the Grid CA (gw)" "tls.caSecret" "${SERVING[@]}" --set tls.caSecret=""
+try_reject_msg "$GW_DIR" "gridServing on the provider role (gw)" "consumer role only" "${SERVING[@]}" --set gatewayConfig.role=provider \
+  --set-json "gatewayConfig.peerTrust.certDigests=[\"$DIGEST\"]"
+try_reject_msg "$GW_DIR" "gridServing on the ai image flavor (gw)" "image.flavor grid-gateway" "${SERVING[@]}" \
+  --set image.repository=quay.io/example/ai --set image.flavor=ai
+# --reuse-values from a release predating these keys leaves them absent.
+try_template "$GW_DIR" "absent gridServing and peerTrust maps (gw)" "${GW_REQ[@]}" --set gridServing=null \
+  --set gatewayConfig.peerTrust=null
 try_reject_msg "$GW_DIR" "listenerTls enabled no secret (gw)" "listenerTls.existingSecret is required" "${GW_REQ[@]}" \
   --set gatewayConfig.listenerTls.enabled=true --namespace grid-system
 
@@ -803,7 +963,7 @@ try_template "$SITE_DIR" "site with provider-site label" "${SITE_REQ[@]}" --name
 
 echo ""
 echo "=== Schema rejection (site) ==="
-try_reject "$SITE_DIR" "missing gridNetwork name" --set gridSite.name=test
+try_reject "$SITE_DIR" "blank gridNetwork name" --set gridSite.name=test --set gridNetwork.name=""
 try_reject "$SITE_DIR" "missing gridSite name" --set gridNetwork.name=test
 try_reject "$SITE_DIR" "unknown key (site)" "${SITE_REQ[@]}" --set typoField=true
 
@@ -1500,6 +1660,66 @@ if [ "$(helm template v-enroll "$ENROLL_DIR" --namespace grid-system --show-only
 else
   fail "enrollment: bootstrap RBAC should carry hook-succeeded"
 fi
+
+# ======================================================================
+# GitOps Determinism
+# ======================================================================
+
+echo ""
+echo "======================================================================"
+echo "  GitOps Determinism"
+echo "======================================================================"
+
+# Argo CD renders with helm template, no cluster access, on every sync.
+echo ""
+echo "=== No cluster lookups or render-varying functions ==="
+NONDET='\b(lookup|randAlphaNum|randAlpha|randNumeric|randAscii|randBytes|randInt|shuffle|uuidv4|now|htpasswd|bcrypt|encryptAES|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b|\.Release\.Revision'
+for chart in charts/*/; do
+  # A YAML # comment still executes its template actions, so only template comments are skipped.
+  hits=$(grep -rnE "$NONDET" "$chart/templates" | grep -vE '^[^:]+:[0-9]+:\s*(#[^{]*$|\{\{-? */\*)' || true)
+  if [ -z "$hits" ]; then
+    pass "deterministic functions only: $chart"
+  else
+    fail "render-varying template code in $chart: $(echo "$hits" | head -3 | tr '\n' ' ')"
+  fi
+done
+
+echo ""
+echo "=== Renders twice to identical bytes ==="
+# same_render <label> <helm template args...>
+same_render() {
+  local label="$1" first second
+  shift
+  if first=$(helm template v-det "$@" 2>&1) && second=$(helm template v-det "$@" 2>&1) && [ "$first" = "$second" ]; then
+    pass "identical renders: $label"
+  else
+    fail "renders differ or fail: $label"
+  fi
+}
+same_render "grid-operator defaults" "$CHART_DIR"
+same_render "grid-site defaults" charts/grid-site --set gridNetwork.name=grid --set gridSite.name=site-a
+same_render "grid-enrollment defaults" charts/grid-enrollment
+same_render "grid-enrollment local authz" charts/grid-enrollment --set enrollment.authz=local
+same_render "praxis-gateway defaults" "$GW_DIR" --set config.existingConfigMap=cfg
+same_render "grid-mock-providers defaults" charts/grid-mock-providers
+for f in "$HS_VALUES"/*.yaml; do
+  role=$(basename "$f" .yaml)
+  extra=()
+  case $role in
+    *-grid-enrollment) chart=charts/grid-enrollment ;;
+    *-grid-operator) chart=$CHART_DIR ;;
+    hub-grid-site) chart=charts/grid-site ;;
+    site-grid-site)
+      chart=charts/grid-site
+      extra=("${HS_PINNED[@]}")
+      ;;
+    *-praxis-gateway)
+      chart=$GW_DIR
+      extra=("${HS_GW_PINNED[@]}")
+      ;;
+  esac
+  same_render "example hub-site $role" "$chart" --namespace grid -f "$f" "${extra[@]}"
+done
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""

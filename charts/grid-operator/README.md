@@ -48,7 +48,7 @@ the chart and operator ship together.
 ## Verify
 
 ```bash
-kubectl get crd gridnetworks.grid.praxis-proxy.io
+kubectl api-resources --api-group=grid.praxis-proxy.io
 kubectl get deployment grid-operator -n grid-system
 helm test grid-operator -n grid-system
 ```
@@ -59,17 +59,13 @@ helm test grid-operator -n grid-system
 helm uninstall grid-operator -n grid-system
 ```
 
-Helm removes all namespaced resources (Deployment, ServiceAccount, Services,
-RoleBindings) but **does not remove CRDs**. This is standard Helm CRD
-behavior. Custom resources (GridNetworks, GridSites, InferenceProviders)
-created by other chart releases (e.g., grid-site) are not affected by
-operator uninstall.
-
-To remove CRDs and all custom resources:
+Helm removes the namespaced resources and, with `crds.keep: true` (the
+default), keeps the CRDs and every custom resource. To remove CRDs and all
+custom resources:
 
 ```bash
-kubectl delete crd gridnetworks.grid.praxis-proxy.io \
-  gridsites.grid.praxis-proxy.io \
+kubectl delete crd agenttoolproviders.grid.praxis-proxy.io \
+  gridnetworks.grid.praxis-proxy.io gridsites.grid.praxis-proxy.io \
   inferenceproviders.grid.praxis-proxy.io
 ```
 
@@ -82,6 +78,20 @@ helm upgrade grid-operator \
   --namespace grid-system
 ```
 
+### Grid SWIM and signals
+
+- The Deployment uses the Recreate strategy, so an upgrade stops the old pod
+  before the new one starts. Two pods would gossip two identities for one site.
+- With a LoadBalancer SWIM Service the operator waits for its address and never
+  falls back to the Pod IP. `GRID_SWIM_ADVERTISE_ADDR` still carries the Pod IP
+  for an older binary.
+- The operator holds SWIM until the GridNetwork key loads. Set
+  `swim.requireKey: false` to opt out.
+- Peers learn each site's signals endpoint over SWIM, and dial port 9091 on a
+  site that advertises none.
+- The signals listener binds `[::]:9091`, or `0.0.0.0:9091` without IPv6.
+- Unparseable `GRID_SIGNALS_*` settings fail at startup.
+
 ### Gateway namespace
 
 The operator looks for the gateway Service in the release namespace unless
@@ -89,38 +99,42 @@ The operator looks for the gateway Service in the release namespace unless
 `grid-system`. If the release is outside `grid-system` and the gateway runs
 there, set `gateway.namespace=grid-system` when you upgrade.
 
-### CRD upgrades
+### CRDs
 
-Helm installs CRDs on first install but **does not upgrade them** on
-`helm upgrade`. When upgrading to a version with changed CRDs, apply the
-new CRDs before upgrading the chart.
+The CRDs are chart templates, so `helm upgrade` and an Argo CD sync upgrade
+them. Set `crds.enabled: false` when a platform owns them, such as the RHOAI
+`aiGrid` component, or for a second release in the same cluster.
 
-From the OCI chart artifact:
-
-```bash
-helm pull oci://ghcr.io/praxis-proxy/charts/grid-operator --version <new-version> --untar
-kubectl apply -f grid-operator/crds/
-```
-
-From the source repository:
+Releases before this chart version installed the CRDs from `crds/`, so Helm
+does not own them yet. First check that no other release owns them. The
+release annotation must be empty or this release:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/praxis-proxy/grid/v<new-version>/deploy/crds/gridnetwork.yaml
-kubectl apply -f https://raw.githubusercontent.com/praxis-proxy/grid/v<new-version>/deploy/crds/gridsite.yaml
-kubectl apply -f https://raw.githubusercontent.com/praxis-proxy/grid/v<new-version>/deploy/crds/inferenceprovider.yaml
+kubectl get crd agenttoolproviders.grid.praxis-proxy.io gridnetworks.grid.praxis-proxy.io \
+  gridsites.grid.praxis-proxy.io inferenceproviders.grid.praxis-proxy.io \
+  -o custom-columns='NAME:.metadata.name,RELEASE:.metadata.annotations.meta\.helm\.sh/release-name'
 ```
 
-Then upgrade the chart:
+Then adopt them once. With Helm 3.17 or later:
 
 ```bash
 helm upgrade grid-operator oci://ghcr.io/praxis-proxy/charts/grid-operator \
-  --version <new-version> --namespace grid-system
+  --version <new-version> --namespace grid-system --take-ownership
+```
+
+With an older Helm, mark them as owned by the release, then upgrade as usual:
+
+```bash
+RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders gridnetworks gridsites inferenceproviders; do kubectl label crd "${crd}.grid.praxis-proxy.io" app.kubernetes.io/managed-by=Helm --overwrite; kubectl annotate crd "${crd}.grid.praxis-proxy.io" meta.helm.sh/release-name="${RELEASE}" meta.helm.sh/release-namespace="${NAMESPACE}" --overwrite; done
 ```
 
 ## Values
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `crds.enabled` | bool | `true` | Install and upgrade the Grid CRDs. `false` when a platform owns them. |
+| `crds.keep` | bool | `true` | Keep the CRDs on `helm uninstall` and an Argo CD delete or prune. |
+| `rbac.enrollmentNamespace` | string | `""` | The grid-enrollment namespace. The render fails if the operator would get Secret access there. |
 | `replicaCount` | int | `1` | Operator replicas. Must be 1 (schema-enforced). |
 | `image.repository` | string | `ghcr.io/praxis-proxy/grid-operator` | Image repository. |
 | `image.tag` | string | `""` | Image tag. Defaults to chart appVersion. |
@@ -143,15 +157,20 @@ helm upgrade grid-operator oci://ghcr.io/praxis-proxy/charts/grid-operator \
 | `metrics.service.port` | int | `9090` | Metrics Service port. |
 | `metrics.service.annotations` | object | `{}` | Metrics Service annotations. |
 | `swim.bindAddress` | string | `0.0.0.0:7946` | SWIM protocol bind address. |
-| `swim.advertiseAddress` | string | `""` | Externally reachable SWIM address. Defaults to Pod IP. |
+| `swim.advertiseAddress` | string | `""` | Externally reachable SWIM address. Defaults to the SWIM Service LoadBalancer address, else Pod IP. |
+| `swim.requireKey` | bool | `true` | Hold SWIM traffic until the GridNetwork key loads or the network declares none. |
 | `swim.siteName` | string | `""` | Bootstrap SWIM site name. |
 | `swim.seeds` | string | `""` | Bootstrap SWIM seed endpoints (comma-separated `ip:port`, `[ipv6]:port`, or `hostname:port`). |
 | `swim.service.enabled` | bool | `false` | Create a SWIM Service. |
 | `swim.service.type` | string | `ClusterIP` | SWIM Service type. |
 | `swim.service.port` | int | `7946` | SWIM Service port. |
 | `swim.service.annotations` | object | `{}` | SWIM Service annotations. |
-| `swim.service.loadBalancerIP` | string | `""` | Static IP for LoadBalancer. |
+| `swim.service.loadBalancerIP` | string | `""` | Static IP for LoadBalancer. Deprecated in Kubernetes, so prefer `metallb.io/loadBalancerIPs`. |
 | `swim.service.externalTrafficPolicy` | string | `""` | External traffic policy. Defaults to Local for LoadBalancer. |
+| `swim.service.loadBalancerSourceRanges` | list | `[]` | Optional CIDRs allowed to reach the SWIM and signals LoadBalancer, where the implementation enforces them. |
+| `signals.enabled` | bool | `false` | For signalTransport poll. Adds a TCP port named `signals` to the SWIM Service and points this site's gateway at it. Needs `swim.service.enabled`. A LoadBalancer must support mixed UDP and TCP ports. |
+| `signals.port` | int | `9091` | Signals port on the SWIM Service. Peers learn the LoadBalancer address and this port over gossip. |
+| `signals.advertiseAddress` | string | `""` | Signals endpoint gossiped to peers. Set it with `swim.advertiseAddress` or a NodePort Service, where the operator discovers no LoadBalancer address. |
 | `gateway.address` | string | `""` | Advertised gateway address override. Maps to `GRID_GATEWAY_ADDRESS`. |
 | `gateway.serviceName` | string | `""` | Provider gateway Service name the operator resolves and advertises to remote sites. Maps to `GRID_GATEWAY_SERVICE_NAME`. |
 | `gateway.namespace` | string | `""` | Namespace of the provider gateway Service. Empty uses the release namespace. Outside the resource namespaces, the operator gets only `get` on that one Service there. Maps to `GRID_GATEWAY_NAMESPACE`. |
@@ -232,18 +251,28 @@ Expose the SWIM port for cross-cluster mesh connectivity:
 
 ```yaml
 swim:
-  advertiseAddress: "swim.east1.example.com:7946"
   service:
     enabled: true
     type: LoadBalancer
     annotations:
-      service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      metallb.io/loadBalancerIPs: "192.0.2.10"
 ```
 
-When a LoadBalancer or NodePort Service fronts the SWIM port, set
-`swim.advertiseAddress` to the externally reachable address and port.
-Without this, the operator advertises its Pod IP, which is not routable
-from remote clusters.
+With a LoadBalancer Service and no `swim.advertiseAddress`, the operator
+advertises the Service's LoadBalancer address and port. It reports not ready
+until the address appears, logging an error after 3 minutes, and exits when
+the address later changes so the restarted pod advertises the new one. A
+hostname resolves once at startup, so it needs a stable IP. An explicit
+`swim.advertiseAddress` always wins. Set it for a NodePort Service, which
+otherwise advertises the Pod IP, not routable from remote clusters. Pin the
+LoadBalancer IP with an annotation such as `metallb.io/loadBalancerIPs`.
+The SWIM LoadBalancer Service publishes not-ready addresses, because some
+implementations, such as k3s servicelb, publish an address only for an endpoint.
+
+Signals on a LoadBalancer require `externalTrafficPolicy: Local`, the chart
+default. The listener caps handshakes per source address, and `Cluster` SNAT
+gives many peers one source. Set `swim.service.loadBalancerSourceRanges` to the peers'
+egress CIDRs where the implementation enforces it.
 
 The chart creates a Service but does not configure cross-cluster networking,
 DNS, or firewall rules. Those remain deployment-platform responsibilities.

@@ -41,13 +41,11 @@ The hub mints a one-time token for each site, and the site's grid-operator redee
 
 ### Invite a site on the hub
 
-Add the site to the enrollment chart's `invites` value and run `helm upgrade`. Invites need `enrollment.authz=kube`. `expiresInSecs` is capped at 604800 (seven days).
+Add the site to the enrollment chart's `invites` value, keyed by site name, and run `helm upgrade`. Invites need `enrollment.authz=kube`. `network` defaults to `grid`, and `expiresInSecs` allows at most 604800 (seven days).
 
-```yaml
-invites:
-  - siteName: east2
-    gridNetworkRef: my-grid
-    expiresInSecs: 86400
+```bash
+helm upgrade --install grid-enrollment ./charts/grid-enrollment --namespace grid-enrollment \
+  --set invites.east2.network=my-grid --set invites.east2.expiresInSecs=86400
 ```
 
 After each install or upgrade, a Job mints a token for each entry into Secret `grid-invite-<siteName>` (key `token`) in the release namespace. The Job skips entries whose Secret already exists, so an upgrade mints only for new sites. The Job retries an unreachable service for about four minutes per run, not per site, then fails naming every site it did not invite. If the service may start slowly, pass `--timeout 10m`, since connect timeouts can stretch that past Helm's default five-minute hook timeout. Before Helm 3.19, a failed invite run leaves its hook RBAC in place until the next run.
@@ -69,12 +67,12 @@ Enable enrollment in the grid-operator chart:
 ```bash
 helm install grid-operator ./charts/grid-operator \
   --namespace grid-system \
+  --set swim.siteName=east2 \
   --set enrollment.enabled=true \
-  --set enrollment.url=https://enrollment.apps.example.com \
-  --set enrollment.siteName=east2 \
-  --set enrollment.caBundle.secret=grid-ca-bundle \
-  --set enrollment.tokenSecretRef.name=grid-invite-east2
+  --set enrollment.url=https://enrollment.apps.example.com
 ```
+
+The site name follows `swim.siteName`, the CA bundle defaults to Secret `grid-ca-bundle`, and the token to Secret `grid-invite-<siteName>`. On the hub itself, `enrollment.url` defaults to the in-cluster `grid-enrollment` Service.
 
 The GridNetwork's `spec.tls.siteSecretRef` and `caSecretRef` name the Secrets the operator writes, and both must be in the operator namespace. When the `siteSecretRef` Secret is absent at startup, the operator generates a key, redeems the token, and writes the grid CA (`ca.crt`) and the site identity (`tls.crt`, `tls.key`). The pod reports ready after enrollment finishes. The operator:
 
