@@ -302,36 +302,60 @@ async fn register_peers(ctx: &OperatorCtx, client: &Client) -> Result<(), Operat
 
 /// What this site holds about each peer it knows.
 ///
-/// Keyed by `GridSite` name, which is the name a peer's certificate carries in
-/// its DNS SAN. The SAN survives renewal, so a peer stays named through a key
-/// rotation. `status` is deliberately not read: it is populated from gossip,
-/// and a member could advertise its own certificate under another site's name.
-/// The labels are the local object's for the same reason.
+/// Keyed by the bare `site_id` both poll and serve look a peer up by, which an
+/// auto-discovered object's `{network}-{site_id}` name is not. When two objects
+/// name one site, a pinned record outranks an unpinned one, then an enrolled
+/// object outranks a discovered stub. `status` is deliberately not read: it is
+/// populated from gossip, and a member could advertise its own certificate under
+/// another site's name. The labels are the local object's for the same reason.
 fn peer_identities(
     sites: &[GridSite],
     trust: signals::PeerTrustMode,
 ) -> std::collections::BTreeMap<String, signals::PeerRecord> {
     let pinned = trust == signals::PeerTrustMode::Pin;
-    sites
-        .iter()
-        .filter_map(|site| {
-            let name = site.metadata.name.clone()?;
-            let record = signals::PeerRecord {
-                labels: site.metadata.labels.clone().unwrap_or_default(),
-                pins: site
-                    .spec
-                    .trust
-                    .as_ref()
-                    .filter(|_| pinned)
-                    .and_then(|site_trust| site_trust.canonical_fingerprints.as_deref())
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|fp| signals::canonical_fingerprint(fp))
-                    .collect(),
-            };
-            Some((name, record))
-        })
-        .collect()
+    let mut ranked = std::collections::BTreeMap::<String, ((bool, bool), signals::PeerRecord)>::new();
+    for site in sites {
+        let Some((key, enrolled)) = peer_site_key(site) else {
+            continue;
+        };
+        let record = signals::PeerRecord {
+            labels: site.metadata.labels.clone().unwrap_or_default(),
+            pins: site
+                .spec
+                .trust
+                .as_ref()
+                .filter(|_| pinned)
+                .and_then(|site_trust| site_trust.canonical_fingerprints.as_deref())
+                .unwrap_or_default()
+                .iter()
+                .map(|fp| signals::canonical_fingerprint(fp))
+                .collect(),
+        };
+        let rank = (!record.pins.is_empty(), enrolled);
+        if ranked.get(&key).is_none_or(|(held, _)| rank > *held) {
+            ranked.insert(key, (rank, record));
+        }
+    }
+    ranked.into_iter().map(|(key, (_, record))| (key, record)).collect()
+}
+
+/// The bare `site_id` a peer is keyed by, and whether the object is enrolled
+/// rather than a discovered stub carrying [`ANNOTATION_SITE_ID`].
+pub(crate) fn peer_site_key(site: &GridSite) -> Option<(String, bool)> {
+    let discovered = site
+        .metadata
+        .labels
+        .as_ref()
+        .is_some_and(|labels| labels.get(LABEL_AUTO_DISCOVERED).is_some_and(|v| v == "true"));
+    // Only discovery's own stubs speak for another id; any other object is its name.
+    site.metadata
+        .annotations
+        .as_ref()
+        .filter(|_| discovered)
+        .and_then(|annotations| annotations.get(ANNOTATION_SITE_ID))
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| (id.clone(), false))
+        .or_else(|| site.metadata.name.clone().map(|name| (name, true)))
 }
 
 /// What a reader must satisfy to be served each provider's signals.
@@ -488,6 +512,14 @@ const FIELD_MANAGER: &str = "grid-operator";
 /// This opt-in gate prevents auto-discovery from changing the overlay generation
 /// semantics for networks that were not designed with it in mind.
 pub const LABEL_AUTO_DISCOVER_SITES: &str = "grid.praxis-proxy.io/auto-discover-sites";
+
+/// Marks a `GridSite` that discovery created from SWIM membership.
+pub const LABEL_AUTO_DISCOVERED: &str = "grid.praxis-proxy.io/auto-discovered";
+
+/// Bare SWIM `site_id` on an auto-discovered `GridSite`, whose name carries a network prefix.
+///
+/// An annotation, not a label: the gossiped id is unvalidated, and a label the API server rejects fails the apply.
+pub const ANNOTATION_SITE_ID: &str = "grid.praxis-proxy.io/site-id";
 
 // ---------------------------------------------------------------------------
 // Cross-resource watch mappers
@@ -2591,6 +2623,10 @@ pub(crate) fn is_crdt_provider_routing_eligible(
 pub(crate) struct DiscoveredSite {
     /// Kubernetes resource name derived deterministically from the SWIM `site_id`.
     pub name: String,
+    /// Bare SWIM `site_id`, stamped as an annotation so the poll path can key by it.
+    ///
+    /// The name is `{network}-{site_id}`, so it is not the key the poller uses.
+    pub site_id: String,
     /// The `GridNetwork` this site belongs to.
     pub grid_network_ref: String,
     /// Data-plane gateway address for egress connectivity.
@@ -2627,14 +2663,53 @@ pub(crate) fn discovered_sites_from_swim(
         .members
         .iter()
         .filter(|m| m.status == MemberStatus::Alive && m.site_id != local_site)
-        .filter(|m| !m.site_id.trim().is_empty())
+        // Only a name the grid CA could have issued, so one gossiped id cannot fail the apply or collide.
+        .filter(|m| certs::validate_site_name(&m.site_id).is_ok())
         .map(|m| DiscoveredSite {
             name: discovered_site_k8s_name(network_name, &m.site_id),
+            site_id: m.site_id.clone(),
             grid_network_ref: network_name.to_owned(),
             egress_address: m.gateway_address.clone().unwrap_or_default(),
             site_cert_pem: m.site_cert_pem.clone(),
         })
         .collect()
+}
+
+/// Most `GridSite` objects auto discovery creates for one network, bounding what a gossiping peer can mint.
+const MAX_AUTO_CREATED_SITES: usize = 256;
+
+/// Names of the auto-discovered `GridSite` objects that already belong to `network_name`.
+async fn auto_discovered_stubs(api: &Api<GridSite>, network_name: &str) -> Result<BTreeSet<String>, OperatorError> {
+    let selector = format!("{LABEL_AUTO_DISCOVERED}=true,grid.praxis-proxy.io/network={network_name}");
+    Ok(api
+        .list(&ListParams::default().labels(&selector))
+        .await?
+        .items
+        .into_iter()
+        .filter_map(|stub| stub.metadata.name)
+        .collect())
+}
+
+/// Log the members [`admit_stub`] left out this round.
+fn warn_capped(network_name: &str, capped: usize) {
+    if capped > 0 {
+        tracing::warn!(
+            network = %network_name,
+            capped,
+            "SWIM members not adopted: {MAX_AUTO_CREATED_SITES} auto-discovered GridSites reached"
+        );
+    }
+}
+
+/// Whether discovery may apply `name`: an existing stub always, a new one only under [`MAX_AUTO_CREATED_SITES`].
+fn admit_stub(stubs: &mut BTreeSet<String>, name: &str) -> bool {
+    if stubs.contains(name) {
+        return true;
+    }
+    if stubs.len() >= MAX_AUTO_CREATED_SITES {
+        return false;
+    }
+    stubs.insert(name.to_owned())
 }
 
 /// Derive a Kubernetes resource name for an auto-discovered `GridSite`.
@@ -2858,6 +2933,40 @@ async fn reconcile_site_cert_pem(
     Ok(())
 }
 
+/// The applied `GridSite` for a discovered peer, named for the identity the probe verifies.
+fn discovered_site_spec(site: &DiscoveredSite, network_name: &str, plaintext: bool) -> serde_json::Value {
+    let mut spec = serde_json::json!({ "gridNetworkRef": site.grid_network_ref });
+    if !site.egress_address.is_empty()
+        && let Some(fields) = spec.as_object_mut()
+    {
+        let tls = if plaintext {
+            serde_json::json!({ "mode": "Plaintext" })
+        } else {
+            serde_json::json!({
+                "mode": "Mutual",
+                "serverName": format!("{}.{}", site.site_id, certs::SPIFFE_TRUST_DOMAIN),
+            })
+        };
+        fields.insert(
+            "egress".to_owned(),
+            serde_json::json!({ "address": site.egress_address, "tls": tls }),
+        );
+    }
+    serde_json::json!({
+        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "kind": "GridSite",
+        "metadata": {
+            "name": site.name,
+            "labels": {
+                "grid.praxis-proxy.io/network": network_name,
+                LABEL_AUTO_DISCOVERED: "true"
+            },
+            "annotations": { ANNOTATION_SITE_ID: site.site_id }
+        },
+        "spec": spec,
+    })
+}
+
 /// Create or update `GridSite` resources for remote Alive SWIM members.
 ///
 /// Uses server-side apply, so the call is idempotent: applying an already-existing
@@ -2892,39 +3001,17 @@ async fn reconcile_discovered_sites(
     }
 
     let api: Api<GridSite> = Api::all(client.clone());
+    let mut stubs = auto_discovered_stubs(&api, network_name).await?;
+    let mut capped = 0_usize;
 
     for site in &sites {
+        if !admit_stub(&mut stubs, &site.name) {
+            capped += 1;
+            continue;
+        }
         // Server-side apply the spec.  Creating on first call; updating on subsequent
         // calls is a no-op when the spec has not changed.
-        let mut spec_obj = serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
-            "kind": "GridSite",
-            "metadata": {
-                "name": site.name,
-                "labels": {
-                    "grid.praxis-proxy.io/network": network_name,
-                    "grid.praxis-proxy.io/auto-discovered": "true"
-                }
-            },
-            "spec": {
-                "gridNetworkRef": site.grid_network_ref,
-            }
-        });
-        if !site.egress_address.is_empty() {
-            let tls_mode = if plaintext { "Plaintext" } else { "Mutual" };
-            spec_obj.get_mut("spec").and_then(|s| {
-                s.as_object_mut().map(|o| {
-                    o.insert(
-                        "egress".to_owned(),
-                        serde_json::json!({
-                            "address": site.egress_address,
-                            "tls": { "mode": tls_mode }
-                        }),
-                    );
-                })
-            });
-        }
-        let spec_doc = spec_obj;
+        let spec_doc = discovered_site_spec(site, network_name, plaintext);
 
         api.patch(
             &site.name,
@@ -2990,6 +3077,7 @@ async fn reconcile_discovered_sites(
         );
     }
 
+    warn_capped(network_name, capped);
     Ok(())
 }
 
@@ -4270,6 +4358,270 @@ mod tests {
         let a_name = a.first().unwrap_or_else(|| std::process::abort()).name.as_str();
         let b_name = b.first().unwrap_or_else(|| std::process::abort()).name.as_str();
         assert_eq!(a_name, b_name, "name must be deterministic across calls");
+    }
+
+    #[test]
+    fn discovered_sites_carry_bare_site_id() {
+        let snap = make_snapshot(vec![make_member("remote", "10.0.0.2:7946", MemberStatus::Alive)]);
+        let sites = discovered_sites_from_swim("net", "local", &snap);
+        let site = sites.first().unwrap_or_else(|| std::process::abort());
+        assert_eq!(site.name, "net-remote", "name is the network-prefixed composite");
+        assert_eq!(
+            site.site_id, "remote",
+            "site_id is the bare SWIM id the poll path keys by"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // peer_identities keying (grid#peer-identity: poll path keys by site_id)
+    // -----------------------------------------------------------------------
+
+    fn peer_grid_site(name: &str, site_id_annotation: Option<&str>, pins: &[&str]) -> GridSite {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("name".to_owned(), name.into());
+        if let Some(id) = site_id_annotation {
+            let mut annotations = serde_json::Map::new();
+            annotations.insert(ANNOTATION_SITE_ID.to_owned(), id.into());
+            metadata.insert("annotations".to_owned(), serde_json::Value::Object(annotations));
+            metadata.insert(
+                "labels".to_owned(),
+                serde_json::json!({ LABEL_AUTO_DISCOVERED: "true" }),
+            );
+        }
+        let mut spec = serde_json::Map::new();
+        spec.insert("gridNetworkRef".to_owned(), "net".into());
+        if !pins.is_empty() {
+            spec.insert("trust".to_owned(), serde_json::json!({ "canonicalFingerprints": pins }));
+        }
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "kind": "GridSite",
+            "metadata": serde_json::Value::Object(metadata),
+            "spec": serde_json::Value::Object(spec),
+        }))
+        .unwrap_or_else(|_| std::process::abort())
+    }
+
+    #[test]
+    fn peer_identities_keys_auto_discovered_by_site_id_annotation() {
+        let sites = [peer_grid_site("net-remote", Some("remote"), &["pin-a"])];
+        let identities = peer_identities(&sites, signals::PeerTrustMode::Pin);
+        assert!(
+            identities.contains_key("remote"),
+            "keyed by the bare site_id annotation"
+        );
+        assert!(
+            !identities.contains_key("net-remote"),
+            "never keyed by the prefixed name"
+        );
+    }
+
+    #[test]
+    fn peer_identities_falls_back_to_name_for_local_site() {
+        let sites = [peer_grid_site("site-a", None, &["pin-a"])];
+        let identities = peer_identities(&sites, signals::PeerTrustMode::Pin);
+        assert!(
+            identities.contains_key("site-a"),
+            "a bare-named site falls back to metadata.name"
+        );
+    }
+
+    #[test]
+    fn peer_identities_blank_annotation_falls_back_to_name() {
+        let sites = [peer_grid_site("site-a", Some("   "), &["pin-a"])];
+        let identities = peer_identities(&sites, signals::PeerTrustMode::Pin);
+        assert!(
+            identities.contains_key("site-a"),
+            "a blank annotation is ignored, name is used"
+        );
+    }
+
+    #[test]
+    fn peer_identities_prefers_pinned_record_on_collision() {
+        // Two objects name one site: an empty auto-discovered stub and a pinned
+        // object. The pinned one wins in either order, so it is never shadowed.
+        let empty = peer_grid_site("net-remote", Some("remote"), &[]);
+        let pinned = peer_grid_site("remote", None, &["pin-a"]);
+        for order in [vec![empty.clone(), pinned.clone()], vec![pinned, empty]] {
+            let identities = peer_identities(&order, signals::PeerTrustMode::Pin);
+            let record = identities.get("remote").unwrap_or_else(|| std::process::abort());
+            assert_eq!(
+                record.pins,
+                vec!["pin-a".to_owned()],
+                "the pinned record wins on collision"
+            );
+        }
+    }
+
+    #[test]
+    fn peer_identities_unblocks_poll_for_pinned_auto_discovered_peer() {
+        // The bug: an auto-discovered pinned peer was refused because the poll
+        // path looked it up by the bare site_id and found nothing.
+        let sites = [peer_grid_site("net-remote", Some("remote"), &["pin-a"])];
+        let identities = signals::PeerIdentities::new();
+        identities.set(peer_identities(&sites, signals::PeerTrustMode::Pin));
+        assert!(
+            !identities.refuses("remote"),
+            "the poll path reaches the peer by its bare site_id"
+        );
+        assert_eq!(
+            identities.pins_for("remote"),
+            vec!["pin-a".to_owned()],
+            "pins resolve under the bare id"
+        );
+    }
+
+    #[test]
+    fn peer_identities_keeps_unpinned_peer_refused() {
+        // Membership is not trust: an un-pinned peer stays refused even when it
+        // is now keyed correctly.
+        let sites = [peer_grid_site("net-remote", Some("remote"), &[])];
+        let identities = signals::PeerIdentities::new();
+        identities.set(peer_identities(&sites, signals::PeerTrustMode::Pin));
+        assert!(
+            identities.refuses("remote"),
+            "an un-pinned peer stays refused (membership != trust)"
+        );
+    }
+
+    #[test]
+    fn peer_identities_pinned_stub_outranks_unpinned_enrolled() {
+        let stub = peer_grid_site("net-remote", Some("remote"), &["pin-a"]);
+        let enrolled = peer_grid_site("remote", None, &[]);
+        for order in [vec![stub.clone(), enrolled.clone()], vec![enrolled, stub]] {
+            let identities = peer_identities(&order, signals::PeerTrustMode::Pin);
+            let record = identities.get("remote").unwrap_or_else(|| std::process::abort());
+            assert_eq!(record.pins, vec!["pin-a".to_owned()]);
+        }
+    }
+
+    #[test]
+    fn discovery_skips_ids_the_ca_could_not_issue() {
+        let long = "a".repeat(240);
+        let snap = make_snapshot(
+            ["Site_B", "site-b", long.as_str(), "-x"]
+                .into_iter()
+                .map(|id| make_member(id, "10.0.0.2:7946", MemberStatus::Alive))
+                .collect(),
+        );
+        let ids: Vec<_> = discovered_sites_from_swim("net", "local", &snap)
+            .into_iter()
+            .map(|site| site.site_id)
+            .collect();
+        assert_eq!(ids, vec!["site-b".to_owned()]);
+    }
+
+    #[test]
+    fn discovered_site_spec_plaintext_has_no_server_name() {
+        let site = DiscoveredSite {
+            name: "net-remote".to_owned(),
+            site_id: "remote".to_owned(),
+            grid_network_ref: "net".to_owned(),
+            egress_address: "10.0.0.2:19080".to_owned(),
+            site_cert_pem: None,
+        };
+        let spec = discovered_site_spec(&site, "net", true);
+        assert_eq!(
+            spec.pointer("/spec/egress/tls"),
+            Some(&serde_json::json!({ "mode": "Plaintext" }))
+        );
+    }
+
+    #[test]
+    fn a_hand_made_site_cannot_claim_another_sites_key_by_annotation() {
+        let mut impostor = peer_grid_site("impostor", Some("victim"), &["pin-x"]);
+        impostor.metadata.labels = None;
+        let victim = peer_grid_site("victim", None, &[]);
+        assert_eq!(peer_site_key(&impostor), Some(("impostor".to_owned(), true)));
+        for (trust, order) in [
+            (signals::PeerTrustMode::Pin, vec![impostor.clone(), victim.clone()]),
+            (signals::PeerTrustMode::Spiffe, vec![victim, impostor]),
+        ] {
+            let identities = peer_identities(&order, trust);
+            let record = identities.get("victim").unwrap_or_else(|| std::process::abort());
+            assert!(
+                record.pins.is_empty(),
+                "{trust:?}: the impostor's pins never land on victim"
+            );
+            assert!(
+                identities.contains_key("impostor"),
+                "{trust:?}: it keys by its own name"
+            );
+        }
+    }
+
+    #[test]
+    fn an_auto_discovered_stub_still_keys_by_its_bare_id() {
+        let stub = peer_grid_site("net-remote", Some("remote"), &[]);
+        assert_eq!(peer_site_key(&stub), Some(("remote".to_owned(), false)));
+    }
+
+    #[test]
+    fn peer_identities_spiffe_keys_discovered_peer_by_bare_id() {
+        let sites = [peer_grid_site("net-remote", Some("remote"), &["pin-a"])];
+        let identities = signals::PeerIdentities::new();
+        identities.set(peer_identities(&sites, signals::PeerTrustMode::Spiffe));
+        assert!(
+            identities.labels_for("remote").is_some(),
+            "poll and serve find it by bare id"
+        );
+        assert!(identities.pins_for("remote").is_empty(), "spiffe mode carries no pins");
+    }
+
+    #[test]
+    fn peer_identities_spiffe_enrolled_outranks_discovered_stub() {
+        let mut stub = peer_grid_site("net-remote", Some("remote"), &[]);
+        stub.metadata.labels = Some(std::collections::BTreeMap::from([(
+            "from".to_owned(),
+            "stub".to_owned(),
+        )]));
+        let mut enrolled = peer_grid_site("remote", None, &[]);
+        enrolled.metadata.labels = Some(std::collections::BTreeMap::from([(
+            "from".to_owned(),
+            "enrolled".to_owned(),
+        )]));
+        for order in [vec![stub.clone(), enrolled.clone()], vec![enrolled, stub]] {
+            let identities = peer_identities(&order, signals::PeerTrustMode::Spiffe);
+            let record = identities.get("remote").unwrap_or_else(|| std::process::abort());
+            assert_eq!(record.labels.get("from").map(String::as_str), Some("enrolled"));
+        }
+    }
+
+    #[test]
+    fn discovery_creates_no_stub_past_the_cap_but_keeps_reconciling_existing_ones() {
+        let mut stubs: BTreeSet<String> = (0..MAX_AUTO_CREATED_SITES).map(|i| format!("net-s{i}")).collect();
+        assert!(admit_stub(&mut stubs, "net-s0"), "an existing stub still reconciles");
+        assert!(!admit_stub(&mut stubs, "net-new"), "no new stub past the cap");
+        assert_eq!(stubs.len(), MAX_AUTO_CREATED_SITES);
+
+        let mut room = BTreeSet::new();
+        assert!(admit_stub(&mut room, "net-a"));
+        assert!(room.contains("net-a"), "an admitted stub counts against the cap");
+    }
+
+    #[test]
+    fn discovered_site_spec_names_the_identity_the_probe_verifies() {
+        let site = DiscoveredSite {
+            name: "net-remote".to_owned(),
+            site_id: "remote".to_owned(),
+            grid_network_ref: "net".to_owned(),
+            egress_address: "10.0.0.2:19080".to_owned(),
+            site_cert_pem: None,
+        };
+        let spec = discovered_site_spec(&site, "net", false);
+        assert_eq!(
+            spec.pointer("/spec/egress/tls/serverName")
+                .and_then(serde_json::Value::as_str),
+            Some("remote.grid.internal")
+        );
+        assert_eq!(
+            spec.pointer("/metadata/annotations")
+                .and_then(|a| a.get(ANNOTATION_SITE_ID))
+                .and_then(serde_json::Value::as_str),
+            Some("remote")
+        );
+        let applied: GridSite = serde_json::from_value(spec).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(peer_site_key(&applied), Some(("remote".to_owned(), false)));
     }
 
     #[test]
