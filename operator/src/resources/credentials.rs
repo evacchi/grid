@@ -23,9 +23,8 @@
 //! [`BearerToken`](crate::resources::credentials::BearerToken) never appears in `Debug`
 //! output or `tracing` spans.
 //! Token values must not be written to Kubernetes resources (status, annotations,
-//! labels, ConfigMaps).  Pass
-//! [`BearerToken`](crate::resources::credentials::BearerToken) only to the
-//! data-plane config generator that injects it into Praxis filter configuration.
+//! labels, ConfigMaps). Expose the value only for an authorized health request
+//! or for data-plane credential injection.
 //!
 //! [`SecretRef`]: crate::crd::grid_network::SecretRef
 
@@ -125,8 +124,8 @@ pub struct BearerTokenRef {
 /// A resolved bearer token ready for data-plane injection.
 ///
 /// The token value is intentionally hidden from [`fmt::Debug`] to prevent
-/// accidental logging.  Pass this value only to the Praxis config generator
-/// that writes it into a Praxis filter pipeline at request time.
+/// accidental logging. Pass it only to authorized request construction or
+/// the Praxis config generator that writes it into a filter pipeline.
 ///
 /// **Do not write the token value to Kubernetes resources.**
 pub struct BearerToken(String);
@@ -140,7 +139,7 @@ impl BearerToken {
 
     /// Return the token value.
     ///
-    /// Use only when the token is needed for config injection.
+    /// Use only when constructing an authorized request or injecting config.
     /// Never log, store in status, or serialize to a Kubernetes resource.
     #[must_use]
     pub fn expose_secret(&self) -> &str {

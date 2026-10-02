@@ -271,7 +271,6 @@ struct PreTimestampBroadcastExtension {
     signature: Option<Vec<u8>>,
 }
 
-
 /// Extension format used by peers that predate the `signature` field.
 ///
 /// bincode is not self-describing, so decoding a two-field payload as
