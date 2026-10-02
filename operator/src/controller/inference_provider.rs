@@ -57,9 +57,10 @@
 use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
+use credentials::CredentialPlan;
 use http::{
     header::{AUTHORIZATION, HeaderValue},
-    uri::Authority,
+    uri::{Authority, Uri},
 };
 use http_body_util::Empty;
 use hyper_util::{client::legacy::Client as HyperClient, rt::TokioExecutor};
@@ -310,10 +311,7 @@ pub(crate) fn probe_url_for_provider(spec: &InferenceProviderSpec) -> Option<Str
 /// Permit bearer auth only for a same-origin HTTPS probe under [RFC 9110 Section 4.3.1].
 ///
 /// [RFC 9110 Section 4.3.1]: https://datatracker.ietf.org/doc/html/rfc9110#section-4.3.1
-fn health_probe_uses_provider_auth(provider_endpoint: &str, probe_url: &str) -> bool {
-    let (Ok(provider), Ok(probe)) = (provider_endpoint.parse::<http::Uri>(), probe_url.parse::<http::Uri>()) else {
-        return false;
-    };
+fn health_probe_uses_provider_auth(provider: &Uri, probe: &Uri) -> bool {
     let (Some(provider_authority), Some(probe_authority)) = (provider.authority(), probe.authority()) else {
         return false;
     };
@@ -438,7 +436,6 @@ pub(crate) fn requeue_interval_for_provider(spec: &InferenceProviderSpec) -> Dur
 /// | Transport / TLS / DNS error | [`Unavailable`] |
 /// | Timeout | [`Unavailable`] |
 /// | Unsupported URL scheme (not `http` or `https`) | [`Unavailable`] |
-/// | Unparseable URL | [`Unavailable`] |
 /// | Native root certificate load failure (when no custom TLS) | [`Unavailable`] |
 ///
 /// [`Healthy`]: ProbeOutcome::Healthy
@@ -446,18 +443,14 @@ pub(crate) fn requeue_interval_for_provider(spec: &InferenceProviderSpec) -> Dur
 /// [`Unavailable`]: ProbeOutcome::Unavailable
 #[expect(
     clippy::too_many_lines,
-    reason = "URL parse + scheme check + TLS branch + client build + request: sequential steps"
+    reason = "scheme check + TLS branch + client build + request: sequential steps"
 )]
 pub(crate) async fn probe_endpoint(
-    url: &str,
+    uri: Uri,
     timeout: Duration,
     tls_config: Option<ClientTlsConfig>,
     authorization: Option<HeaderValue>,
 ) -> ProbeOutcome {
-    let Ok(uri) = url.parse::<http::Uri>() else {
-        return ProbeOutcome::Unavailable;
-    };
-
     // Only http and https are supported.
     match uri.scheme_str() {
         Some("http" | "https") => {},
@@ -472,7 +465,7 @@ pub(crate) async fn probe_endpoint(
     // Fail-closed: TLS config with a non-https URL is a misconfiguration.
     if tls_config.is_some() && uri.scheme_str() != Some("https") {
         tracing::warn!(
-            url,
+            %uri,
             "healthCheck.tls configured but endpoint uses http; probe will fail"
         );
         return ProbeOutcome::Unavailable;
@@ -521,35 +514,29 @@ enum HealthProbeError {
 
 /// Resolve a bearer header only for a same-origin HTTPS health target.
 async fn health_probe_authorization(
-    provider: &InferenceProvider,
+    provider_uri: &Uri,
+    probe_uri: &Uri,
     client: &Client,
-    plan: &credentials::CredentialPlan,
-    url: &str,
+    plan: &CredentialPlan,
 ) -> Result<Option<HeaderValue>, HealthProbeError> {
-    let credentials::CredentialPlan::Bearer(bearer_ref) = plan else {
+    let CredentialPlan::Bearer(bearer_ref) = plan else {
         return Ok(None);
     };
-    if !health_probe_uses_provider_auth(&provider.spec.endpoint, url) {
+    if !health_probe_uses_provider_auth(provider_uri, probe_uri) {
         return Ok(None);
     }
 
-    let name = provider.metadata.name.as_deref().unwrap_or("?");
     let resolver = credentials::KubernetesSecretResolver::new(client.clone());
     let token = match resolver.resolve(bearer_ref).await {
         Ok(token) => token,
         Err(OperatorError::NotFound(_)) => {
-            tracing::warn!(name, "health probe bearer credential became unavailable");
             return Err(HealthProbeError::Status("HealthCheckAuthCredentialUnavailable"));
         },
         Err(error) => return Err(HealthProbeError::Operator(error)),
     };
-    let header = token.authorization_header().map_err(|_invalid_header| {
-        tracing::warn!(
-            name,
-            "health probe bearer credential has invalid HTTP header characters"
-        );
-        HealthProbeError::Status("HealthCheckAuthValueInvalid")
-    })?;
+    let header = token
+        .authorization_header()
+        .map_err(|_invalid_header| HealthProbeError::Status("HealthCheckAuthValueInvalid"))?;
     Ok(Some(header))
 }
 
@@ -557,15 +544,30 @@ async fn health_probe_authorization(
 async fn probe_provider_health(
     provider: &InferenceProvider,
     client: &Client,
-    plan: &credentials::CredentialPlan,
+    credential_plan: &CredentialPlan,
     tls_config: Option<ClientTlsConfig>,
 ) -> Result<ProbeOutcome, HealthProbeError> {
     let Some(url) = probe_url_for_provider(&provider.spec) else {
         return Ok(ProbeOutcome::NotProbed);
     };
-    let authorization = health_probe_authorization(provider, client, plan, &url).await?;
+    let Ok(uri) = url.parse::<Uri>() else {
+        return Ok(ProbeOutcome::Unavailable);
+    };
+    let authorization = match provider.spec.endpoint.parse::<Uri>() {
+        Ok(provider_uri) => health_probe_authorization(&provider_uri, &uri, client, credential_plan)
+            .await
+            .inspect_err(|error| {
+                if let HealthProbeError::Status(reason) = error {
+                    let name = provider.metadata.name.as_deref().unwrap_or("?");
+                    tracing::warn!(name, reason = *reason, "health probe authorization failed");
+                }
+            })?,
+        Err(_) => None,
+    };
+
     let timeout = parse_probe_timeout(provider.spec.health_check.as_ref());
-    Ok(probe_endpoint(&url, timeout, tls_config, authorization).await)
+    let outcome = probe_endpoint(uri, timeout, tls_config, authorization).await;
+    Ok(outcome)
 }
 
 /// Determine the provider phase, matching sites, and optional failure reason.
@@ -1238,36 +1240,29 @@ mod tests {
         assert!(reason.is_none(), "HTTP status alone does not set a status reason");
     }
 
+    /// Parse a URI used by a probe test.
+    fn test_uri(url: &str) -> Uri {
+        url.parse().expect("test URI must parse")
+    }
+
     #[test]
     fn provider_auth_uses_scheme_host_and_effective_port_rfc_9110_section_4_3_1() {
-        assert!(
-            health_probe_uses_provider_auth("https://Example.com/v1", "https://example.com:443/health"),
-            "same origin accepts host case and an explicit default port"
-        );
-        assert!(
-            health_probe_uses_provider_auth("https://example.com:8443/v1", "https://EXAMPLE.com:8443/health"),
-            "same origin accepts a different path on an explicit port"
-        );
-        assert!(
-            !health_probe_uses_provider_auth("https://example.com", "https://other.example.com/health"),
-            "another host must not receive the provider token"
-        );
-        assert!(
-            !health_probe_uses_provider_auth("https://example.com:8443", "https://example.com:9443/health"),
-            "another port must not receive the provider token"
-        );
-        assert!(
-            !health_probe_uses_provider_auth("https://example.com", "http://example.com/health"),
-            "another scheme must not receive the provider token"
-        );
-        assert!(
-            !health_probe_uses_provider_auth("http://example.com", "http://example.com/health"),
-            "bearer tokens must not be sent over HTTP"
-        );
-        assert!(
-            !health_probe_uses_provider_auth("https://example.com", "https://example.com:99999/health"),
-            "an invalid explicit port must not be treated as the default port"
-        );
+        let cases = [
+            ("https://Example.com/v1", "https://example.com:443/health", true),
+            ("https://example.com:8443/v1", "https://EXAMPLE.com:8443/health", true),
+            ("https://example.com", "https://other.example.com/health", false),
+            ("https://example.com:8443", "https://example.com:9443/health", false),
+            ("https://example.com", "http://example.com/health", false),
+            ("http://example.com", "http://example.com/health", false),
+            ("https://example.com", "https://example.com:99999/health", false),
+        ];
+        for (provider, probe, expected) in cases {
+            assert_eq!(
+                health_probe_uses_provider_auth(&test_uri(provider), &test_uri(probe)),
+                expected,
+                "provider {provider} and probe {probe}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1280,6 +1275,21 @@ mod tests {
         assert!(
             authorization.is_none(),
             "a different origin must not receive provider credentials"
+        );
+        assert_eq!(phase, ProviderPhase::Degraded, "anonymous HTTP 401 degrades health");
+        assert!(reason.is_none(), "HTTP status alone does not set a status reason");
+    }
+
+    #[tokio::test]
+    async fn invalid_provider_uri_keeps_health_endpoint_override_anonymous() {
+        let (phase, authorization, reason) = Box::pin(run_protected_health_probe(
+            ProbeAuthFixture::Managed("issue-246-token"),
+            Some("http://[invalid"),
+        ))
+        .await;
+        assert!(
+            authorization.is_none(),
+            "invalid provider URI must not authorize a probe"
         );
         assert_eq!(phase, ProviderPhase::Degraded, "anonymous HTTP 401 degrades health");
         assert!(reason.is_none(), "HTTP status alone does not set a status reason");
@@ -2523,42 +2533,42 @@ mod tests {
     #[tokio::test]
     async fn probe_http_200_yields_healthy() {
         let url = start_test_server(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(result, ProbeOutcome::Healthy, "HTTP 200 response must yield Healthy");
     }
 
     #[tokio::test]
     async fn probe_http_204_yields_healthy() {
         let url = start_test_server(b"HTTP/1.0 204 No Content\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(result, ProbeOutcome::Healthy, "HTTP 204 response must yield Healthy");
     }
 
     #[tokio::test]
     async fn probe_http_500_yields_degraded() {
         let url = start_test_server(b"HTTP/1.0 500 Internal Server Error\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(result, ProbeOutcome::Degraded, "HTTP 500 response must yield Degraded");
     }
 
     #[tokio::test]
     async fn probe_http_503_yields_degraded() {
         let url = start_test_server(b"HTTP/1.0 503 Service Unavailable\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(result, ProbeOutcome::Degraded, "HTTP 503 must yield Degraded");
     }
 
     #[tokio::test]
     async fn probe_http_404_yields_degraded() {
         let url = start_test_server(b"HTTP/1.0 404 Not Found\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(result, ProbeOutcome::Degraded, "HTTP 404 must yield Degraded");
     }
 
     #[tokio::test]
     async fn probe_http_301_yields_degraded() {
         let url = start_test_server(b"HTTP/1.0 301 Moved Permanently\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(
             result,
             ProbeOutcome::Degraded,
@@ -2569,7 +2579,7 @@ mod tests {
     #[tokio::test]
     async fn probe_unreachable_endpoint_yields_unavailable() {
         // Nothing is listening on this port; connection must fail.
-        let result = probe_endpoint("http://127.0.0.1:1", Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri("http://127.0.0.1:1"), Duration::from_secs(5), None, None).await;
         assert_eq!(
             result,
             ProbeOutcome::Unavailable,
@@ -2594,7 +2604,7 @@ mod tests {
             if let Ok((_stream, _)) = listener.accept().await {}
         });
         let url = format!("https://127.0.0.1:{port}");
-        let result = probe_endpoint(&url, Duration::from_secs(5), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), None, None).await;
         assert_eq!(
             result,
             ProbeOutcome::Unavailable,
@@ -2606,20 +2616,14 @@ mod tests {
     async fn probe_unsupported_scheme_ftp_yields_unavailable() {
         // ftp:// is not http or https — must be rejected immediately without
         // attempting a connection.
-        let result = probe_endpoint("ftp://example.com/file", Duration::from_secs(1), None, None).await;
+        let result = probe_endpoint(test_uri("ftp://example.com/file"), Duration::from_secs(1), None, None).await;
         assert_eq!(result, ProbeOutcome::Unavailable, "ftp:// must yield Unavailable");
-    }
-
-    #[tokio::test]
-    async fn probe_unsupported_scheme_file_yields_unavailable() {
-        let result = probe_endpoint("file:///etc/passwd", Duration::from_secs(1), None, None).await;
-        assert_eq!(result, ProbeOutcome::Unavailable, "file:// must yield Unavailable");
     }
 
     #[tokio::test]
     async fn probe_no_scheme_yields_unavailable() {
         // A path-only URL has no scheme — URL parse may succeed but scheme is None.
-        let result = probe_endpoint("/just/a/path", Duration::from_secs(1), None, None).await;
+        let result = probe_endpoint(test_uri("/just/a/path"), Duration::from_secs(1), None, None).await;
         assert_eq!(
             result,
             ProbeOutcome::Unavailable,
@@ -2628,13 +2632,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn probe_unparseable_url_yields_unavailable() {
-        let result = probe_endpoint("not-a-url", Duration::from_secs(1), None, None).await;
-        assert_eq!(
-            result,
-            ProbeOutcome::Unavailable,
-            "unparseable URL must yield Unavailable"
-        );
+    async fn unparseable_health_url_yields_unavailable() {
+        let client = mock_kube_client_for_health_tls("net-1", HashMap::new());
+        for endpoint in ["http://[invalid", "file:///etc/passwd"] {
+            let provider = provider_with_protected_health(endpoint);
+            let Ok(result) = probe_provider_health(&provider, &client, &CredentialPlan::Absent, None).await else {
+                std::process::abort();
+            };
+            assert_eq!(result, ProbeOutcome::Unavailable, "invalid health endpoint {endpoint}");
+        }
     }
 
     #[tokio::test]
@@ -2656,7 +2662,7 @@ mod tests {
             }
         });
         let url = format!("http://127.0.0.1:{port}");
-        let result = probe_endpoint(&url, Duration::from_millis(100), None, None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_millis(100), None, None).await;
         assert_eq!(result, ProbeOutcome::Unavailable, "timeout must yield Unavailable");
     }
 
@@ -2773,7 +2779,7 @@ mod tests {
         })
         .await;
         let tls_config = crate::metrics_scraper::build_tls_client_config(ca.cert_pem.as_bytes(), None, None).unwrap();
-        let result = probe_endpoint(&url, Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
         assert_eq!(
             result,
             ProbeOutcome::Healthy,
@@ -2792,7 +2798,7 @@ mod tests {
         let tls_config = crate::metrics_scraper::build_tls_client_config(ca.cert_pem.as_bytes(), None, None).unwrap();
         let authorization = HeaderValue::from_static("Bearer issue-246-token");
         let result = probe_endpoint(
-            &url,
+            test_uri(&url),
             Duration::from_secs(5),
             Some(Arc::new(tls_config)),
             Some(authorization),
@@ -2817,7 +2823,7 @@ mod tests {
         // Client trusts wrong CA — handshake must fail.
         let tls_config =
             crate::metrics_scraper::build_tls_client_config(ca_wrong.cert_pem.as_bytes(), None, None).unwrap();
-        let result = probe_endpoint(&url, Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
         assert_eq!(
             result,
             ProbeOutcome::Unavailable,
@@ -2831,7 +2837,7 @@ mod tests {
         let ca = certs::generate_ca("test-ca").unwrap();
         let tls_config = crate::metrics_scraper::build_tls_client_config(ca.cert_pem.as_bytes(), None, None).unwrap();
         let url = start_test_server(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-        let result = probe_endpoint(&url, Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
+        let result = probe_endpoint(test_uri(&url), Duration::from_secs(5), Some(Arc::new(tls_config)), None).await;
         assert_eq!(
             result,
             ProbeOutcome::Unavailable,
@@ -2875,8 +2881,8 @@ mod tests {
         // dangling connections.
         let url1 = start_test_server(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n").await;
         let url2 = start_test_server(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-        let r1 = probe_endpoint(&url1, Duration::from_secs(5), None, None).await;
-        let r2 = probe_endpoint(&url2, Duration::from_secs(5), None, None).await;
+        let r1 = probe_endpoint(test_uri(&url1), Duration::from_secs(5), None, None).await;
+        let r2 = probe_endpoint(test_uri(&url2), Duration::from_secs(5), None, None).await;
         assert_eq!(r1, ProbeOutcome::Healthy, "first sequential probe must yield Healthy");
         assert_eq!(r2, ProbeOutcome::Healthy, "second sequential probe must yield Healthy");
     }
@@ -2886,7 +2892,7 @@ mod tests {
         // A successful HTTP probe followed by an HTTPS failure must not
         // interfere with each other.
         let http_url = start_test_server(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-        let plain_outcome = probe_endpoint(&http_url, Duration::from_secs(5), None, None).await;
+        let plain_outcome = probe_endpoint(test_uri(&http_url), Duration::from_secs(5), None, None).await;
 
         // HTTPS probe against a non-TLS server → Unavailable (TLS error).
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2894,8 +2900,13 @@ mod tests {
             .unwrap_or_else(|_| std::process::abort());
         let port = listener.local_addr().unwrap_or_else(|_| std::process::abort()).port();
         tokio::spawn(async move { if let Ok((_stream, _)) = listener.accept().await {} });
-        let tls_outcome =
-            probe_endpoint(&format!("https://127.0.0.1:{port}"), Duration::from_secs(5), None, None).await;
+        let tls_outcome = probe_endpoint(
+            test_uri(&format!("https://127.0.0.1:{port}")),
+            Duration::from_secs(5),
+            None,
+            None,
+        )
+        .await;
 
         assert_eq!(
             plain_outcome,
