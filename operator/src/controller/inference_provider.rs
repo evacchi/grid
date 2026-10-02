@@ -553,16 +553,21 @@ async fn probe_provider_health(
     let Ok(uri) = url.parse::<Uri>() else {
         return Ok(ProbeOutcome::Unavailable);
     };
-    let authorization = match provider.spec.endpoint.parse::<Uri>() {
-        Ok(provider_uri) => health_probe_authorization(&provider_uri, &uri, client, credential_plan)
+    let authorization = if let Ok(provider_uri) = provider.spec.endpoint.parse::<Uri>() {
+        health_probe_authorization(&provider_uri, &uri, client, credential_plan)
             .await
             .inspect_err(|error| {
                 if let HealthProbeError::Status(reason) = error {
                     let name = provider.metadata.name.as_deref().unwrap_or("?");
                     tracing::warn!(name, reason = *reason, "health probe authorization failed");
                 }
-            })?,
-        Err(_) => None,
+            })?
+    } else {
+        if let CredentialPlan::Bearer(_) = credential_plan {
+            let name = provider.metadata.name.as_deref().unwrap_or("?");
+            tracing::warn!(name, "spec.endpoint is not a valid URI; health probe stays anonymous");
+        }
+        None
     };
 
     let timeout = parse_probe_timeout(provider.spec.health_check.as_ref());
