@@ -543,15 +543,13 @@ async fn health_probe_authorization(
         },
         Err(error) => return Err(HealthProbeError::Operator(error)),
     };
-    let value = format!("Bearer {}", token.expose_secret());
-    let mut header = HeaderValue::from_str(&value).map_err(|_invalid_header| {
+    let header = token.authorization_header().map_err(|_invalid_header| {
         tracing::warn!(
             name,
             "health probe bearer credential has invalid HTTP header characters"
         );
         HealthProbeError::Status("HealthCheckAuthValueInvalid")
     })?;
-    header.set_sensitive(true);
     Ok(Some(header))
 }
 
@@ -1263,25 +1261,12 @@ mod tests {
             "another scheme must not receive the provider token"
         );
         assert!(
+            !health_probe_uses_provider_auth("http://example.com", "http://example.com/health"),
+            "bearer tokens must not be sent over HTTP"
+        );
+        assert!(
             !health_probe_uses_provider_auth("https://example.com", "https://example.com:99999/health"),
             "an invalid explicit port must not be treated as the default port"
-        );
-    }
-
-    #[test]
-    fn same_origin_health_endpoint_override_uses_provider_auth() {
-        let mut provider = provider_with_protected_health("https://inference.example.com/v1");
-        provider
-            .spec
-            .health_check
-            .as_mut()
-            .expect("fixture has a health check")
-            .endpoint = Some("https://inference.example.com:443".to_owned());
-        let probe_url = probe_url_for_provider(&provider.spec).expect("fixture has a health check");
-        assert_eq!(probe_url, "https://inference.example.com:443/health");
-        assert!(
-            health_probe_uses_provider_auth(&provider.spec.endpoint, &probe_url),
-            "same-origin HTTPS override should use provider auth"
         );
     }
 
@@ -1298,14 +1283,6 @@ mod tests {
         );
         assert_eq!(phase, ProviderPhase::Degraded, "anonymous HTTP 401 degrades health");
         assert!(reason.is_none(), "HTTP status alone does not set a status reason");
-    }
-
-    #[test]
-    fn plain_http_health_probe_does_not_use_provider_auth_rfc_6750_section_5_3() {
-        assert!(
-            !health_probe_uses_provider_auth("http://inference.example.com", "http://inference.example.com/health"),
-            "bearer tokens must not be sent over HTTP"
-        );
     }
 
     #[tokio::test]

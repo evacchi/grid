@@ -137,9 +137,20 @@ impl BearerToken {
         Self(raw)
     }
 
+    /// Build a sensitive HTTP bearer header without exposing the token to callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token contains invalid HTTP header characters.
+    pub fn authorization_header(&self) -> Result<http::HeaderValue, http::header::InvalidHeaderValue> {
+        let mut header = http::HeaderValue::from_str(&format!("Bearer {}", self.0))?;
+        header.set_sensitive(true);
+        Ok(header)
+    }
+
     /// Return the token value.
     ///
-    /// Use only when constructing an authorized request or injecting config.
+    /// Use only when injecting config.
     /// Never log, store in status, or serialize to a Kubernetes resource.
     #[must_use]
     pub fn expose_secret(&self) -> &str {
@@ -662,6 +673,20 @@ mod tests {
     fn bearer_token_expose_secret_returns_value() {
         let token = BearerToken::new("my-token".to_owned());
         assert_eq!(token.expose_secret(), "my-token");
+    }
+
+    #[test]
+    fn bearer_token_header_is_sensitive_and_rejects_invalid_values() {
+        let token = BearerToken::new("my-token".to_owned());
+        let header = token.authorization_header().expect("valid token must produce a header");
+        assert_eq!(header, "Bearer my-token");
+        assert!(header.is_sensitive(), "bearer header must be marked sensitive");
+
+        let invalid = BearerToken::new("bad\nvalue".to_owned());
+        assert!(
+            invalid.authorization_header().is_err(),
+            "invalid token must be rejected"
+        );
     }
 
     // -----------------------------------------------------------------------
