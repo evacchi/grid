@@ -976,6 +976,7 @@ spec:
                     - `MetricsTlsSecretMissing`, `MetricsTlsKeyMissing`, `MetricsTlsMaterialInvalid`, `MetricsTlsIdentityMismatch`
                     - `HealthCheckTlsSecretMissing`, `HealthCheckTlsKeyMissing`, `HealthCheckTlsMaterialInvalid`,
                       `HealthCheckTlsIdentityMismatch`
+                    - `HealthCheckAuthCredentialUnavailable`, `HealthCheckAuthValueInvalid`
                   nullable: true
                   type: string
               type: object
