@@ -94,7 +94,7 @@ Provided-CA installs must therefore use an external DB (`db.type=external`) whos
 URL sets `sslmode` (verify-full for FIPS).
 
 Postgres reads its serving cert at pod start. Each bootstrap run compares the
-builtin DB Deployment's `grid.praxis-proxy.io/db-serving-cert-sha256` pod
+builtin DB Deployment's `grid.praxis.fast/db-serving-cert-sha256` pod
 annotation with the cert in its Secret and rolls the Deployment when they
 differ, for example after a re-issue or a CA regeneration. A sync that replaces
 the Deployment (Argo CD `Replace=true`) drops the annotation, so the next

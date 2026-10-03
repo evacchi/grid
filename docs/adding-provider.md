@@ -116,7 +116,7 @@ inferenceProviders:
     endpoint: "http://mock-inference-existing.grid-system.svc.cluster.local:8080"
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/provider-site: east1
+        grid.praxis.fast/provider-site: east1
     models:
       - name: sim-model-v1
         capabilities: [text_generation]
@@ -128,7 +128,7 @@ inferenceProviders:
     endpoint: "http://mock-inference-new-provider.grid-system.svc.cluster.local:8080"
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/provider-site: east1
+        grid.praxis.fast/provider-site: east1
     models:
       - name: sim-model-v2
         capabilities: [text_generation]
@@ -263,7 +263,7 @@ KUBECONFIG=/path/to/kubeconfig \
 kubectl get inferenceproviders -n grid-system
 
 # Verify overlay has the new candidate
-kubectl get configmap -l grid.praxis-proxy.io/network \
+kubectl get configmap -l grid.praxis.fast/network \
   -n grid-system -o jsonpath='{.items[0].data.routing-config\.json}' \
   | jq -r '.candidates[] | .name + " stable_id=" + .stable_id'
 
@@ -438,7 +438,7 @@ After running `install.sh` (which waits for the overlay), inspect
 the assigned stable IDs:
 
 ```bash
-kubectl get configmap -l grid.praxis-proxy.io/network \
+kubectl get configmap -l grid.praxis.fast/network \
   -n grid-system -o jsonpath='{.items[0].data.routing-config\.json}' \
   | jq -r '.candidates[] | .name + " stable_id=" + .stable_id'
 ```
@@ -518,12 +518,12 @@ not match any GridSite.
 
 **Check**:
 ```bash
-kubectl get configmap -l grid.praxis-proxy.io/network -n grid-system \
+kubectl get configmap -l grid.praxis.fast/network -n grid-system \
   -o jsonpath='{.items[0].data.routing-config\.json}' | jq '.candidates[].name'
 ```
 
 **Fix**: Verify the GridSite has the
-`grid.praxis-proxy.io/provider-site` label matching the
+`grid.praxis.fast/provider-site` label matching the
 InferenceProvider's `siteSelector.matchLabels`.
 
 ### Consumer returns 500 for new model

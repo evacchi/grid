@@ -11,19 +11,19 @@ rules:
   # (requires list + watch).  It reads individual resources with get and
   # writes spec and status via server-side apply (patch).  Auto-discovery
   # of SWIM peers requires create + update on gridsites.
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - agenttoolproviders
       - gridnetworks
       - inferenceproviders
     verbs: ["get", "list", "watch", "patch"]
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - gridsites
     verbs: ["get", "list", "watch", "patch", "create", "update"]
 
   # Status subresources are authorized separately.
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - agenttoolproviders/status
       - gridnetworks/status

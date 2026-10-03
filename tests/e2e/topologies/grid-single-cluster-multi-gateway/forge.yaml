@@ -145,7 +145,7 @@ spec:
           namespace: grid-system
           values:
             commonLabels:
-              grid.praxis-proxy.io/auto-discover-sites: "true"
+              grid.praxis.fast/auto-discover-sites: "true"
             gridNetwork:
               name: grid-single-cluster-multi-gateway
               gridId: grid-single-cluster-multi-gateway-v1
@@ -188,7 +188,7 @@ spec:
                 endpoint: "http://vcr-inference-provider-a.grid-system.svc.cluster.local:8000"
                 siteSelector:
                   matchLabels:
-                    grid.praxis-proxy.io/provider-site: single
+                    grid.praxis.fast/provider-site: single
                 accessPolicy:
                   siteSelector:
                     matchLabels: {}
@@ -301,8 +301,8 @@ spec:
               - name: "vcr-inference-credential"
                 mountPath: "/etc/praxis/credentials/vcr-inference"
             podLabels:
-              grid.praxis-proxy.io/backend-access: "provider-gateway"
-              grid.praxis-proxy.io/provider-site: "{{ cluster.name }}"
+              grid.praxis.fast/backend-access: "provider-gateway"
+              grid.praxis.fast/provider-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/provider-gateway-a
           namespace: grid-system
@@ -365,8 +365,8 @@ spec:
               - name: "vcr-inference-credential"
                 mountPath: "/etc/praxis/credentials/vcr-inference"
             podLabels:
-              grid.praxis-proxy.io/backend-access: "provider-gateway"
-              grid.praxis-proxy.io/provider-site: "{{ cluster.name }}"
+              grid.praxis.fast/backend-access: "provider-gateway"
+              grid.praxis.fast/provider-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/provider-gateway-b
           namespace: grid-system
@@ -428,8 +428,8 @@ spec:
               - name: "vcr-inference-credential"
                 mountPath: "/etc/praxis/credentials/vcr-inference"
             podLabels:
-              grid.praxis-proxy.io/backend-access: "provider-gateway"
-              grid.praxis-proxy.io/provider-site: "{{ cluster.name }}"
+              grid.praxis.fast/backend-access: "provider-gateway"
+              grid.praxis.fast/provider-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/provider-gateway-c
           namespace: grid-system
@@ -484,7 +484,7 @@ spec:
               enabled: true
               existingSecret: "consumer-gateway-tls"
             podLabels:
-              grid.praxis-proxy.io/consumer-site: "{{ cluster.name }}"
+              grid.praxis.fast/consumer-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/consumer-gateway-a
           namespace: grid-system
@@ -538,7 +538,7 @@ spec:
               enabled: true
               existingSecret: "consumer-gateway-tls"
             podLabels:
-              grid.praxis-proxy.io/consumer-site: "{{ cluster.name }}"
+              grid.praxis.fast/consumer-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/consumer-gateway-b
           namespace: grid-system

@@ -554,7 +554,7 @@ pub fn resolve_budget_statuses(
 /// tuning, and TLS secret references.
 #[derive(Clone, CustomResource, Debug, Deserialize, JsonSchema, Serialize)]
 #[kube(
-    group = "grid.praxis-proxy.io",
+    group = "grid.praxis.fast",
     version = "v1alpha1",
     kind = "GridNetwork",
     plural = "gridnetworks",
@@ -1330,7 +1330,7 @@ mod tests {
     #[test]
     fn grid_network_crd_has_correct_group_and_plural() {
         let crd = crd_json();
-        assert_eq!(crd_spec(&crd, "group"), "grid.praxis-proxy.io", "wrong CRD group");
+        assert_eq!(crd_spec(&crd, "group"), "grid.praxis.fast", "wrong CRD group");
         assert_eq!(
             crd.get("spec")
                 .and_then(|spec| spec.get("names"))

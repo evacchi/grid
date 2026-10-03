@@ -115,7 +115,7 @@ tests:
       gridNetwork.autoDiscoverSites: true
     asserts:
       - equal:
-          path: metadata.labels["grid.praxis-proxy.io/auto-discover-sites"]
+          path: metadata.labels["grid.praxis.fast/auto-discover-sites"]
           value: "true"
 
   - it: leaves discovery off by default
@@ -124,4 +124,4 @@ tests:
       gridSite.name: prod-site
     asserts:
       - notExists:
-          path: metadata.labels["grid.praxis-proxy.io/auto-discover-sites"]
+          path: metadata.labels["grid.praxis.fast/auto-discover-sites"]

@@ -154,7 +154,7 @@ stringData:
 ```
 
 Partial `InferenceProvider.spec.auth` snippet (merge it into a complete
-`InferenceProvider` using the `grid.praxis-proxy.io/v1alpha1` API):
+`InferenceProvider` using the `grid.praxis.fast/v1alpha1` API):
 
 ```yaml
 auth:
@@ -262,7 +262,7 @@ spec:
   accessPolicy:
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/site: cluster-a
+        grid.praxis.fast/site: cluster-a
 ```
 
 Empty `matchLabels` = all sites in the grid.

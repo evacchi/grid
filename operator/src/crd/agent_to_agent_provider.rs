@@ -18,7 +18,7 @@ use super::{
 /// Specification for an [`AgentToAgentProvider`].
 #[derive(Clone, CustomResource, Debug, Deserialize, JsonSchema, Serialize)]
 #[kube(
-    group = "grid.praxis-proxy.io",
+    group = "grid.praxis.fast",
     version = "v1alpha1",
     kind = "AgentToAgentProvider",
     plural = "agenttoagentproviders",

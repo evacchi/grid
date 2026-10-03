@@ -1,9 +1,9 @@
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: west-provider
   labels:
-    grid.praxis-proxy.io/provider-site: west-provider
+    grid.praxis.fast/provider-site: west-provider
 spec:
   gridNetworkRef: glb-demo
   region: west

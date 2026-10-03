@@ -23,7 +23,7 @@ metadata:
   labels:
     {{- include "grid-enrollment.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources: ["enrollmenttokens"]
     verbs: ["create", "delete"]
 {{- if $admins.serviceAccount.create }}

@@ -259,7 +259,7 @@ Praxis acceptance.
 
 ```json
 {
-  "api_version": "grid.praxis-proxy.io/v1alpha2",
+  "api_version": "grid.praxis.fast/v1alpha2",
   "grid_id": "grid-identity",
   "network": "production",
   "consumer": {

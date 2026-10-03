@@ -290,7 +290,7 @@ async fn patch_discovery_status(
         None => serde_json::json!({}),
     };
     let patch = serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": name },
         "status": discovery_status
@@ -562,7 +562,7 @@ mod tests {
 
     fn test_provider(name: &str, discovery_error: Option<&str>) -> InferenceProvider {
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "InferenceProvider",
             "metadata": { "name": name },
             "spec": {

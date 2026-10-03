@@ -48,7 +48,7 @@ the chart and operator ship together.
 ## Verify
 
 ```bash
-kubectl api-resources --api-group=grid.praxis-proxy.io
+kubectl api-resources --api-group=grid.praxis.fast
 kubectl get deployment grid-operator -n grid-system
 helm test grid-operator -n grid-system
 ```
@@ -64,9 +64,9 @@ default), keeps the CRDs and every custom resource. To remove CRDs and all
 custom resources:
 
 ```bash
-kubectl delete crd agenttoolproviders.grid.praxis-proxy.io \
-  gridnetworks.grid.praxis-proxy.io gridsites.grid.praxis-proxy.io \
-  inferenceproviders.grid.praxis-proxy.io
+kubectl delete crd agenttoolproviders.grid.praxis.fast \
+  gridnetworks.grid.praxis.fast gridsites.grid.praxis.fast \
+  inferenceproviders.grid.praxis.fast
 ```
 
 ## Upgrade
@@ -110,8 +110,8 @@ does not own them yet. First check that no other release owns them. The
 release annotation must be empty or this release:
 
 ```bash
-kubectl get crd agenttoolproviders.grid.praxis-proxy.io gridnetworks.grid.praxis-proxy.io \
-  gridsites.grid.praxis-proxy.io inferenceproviders.grid.praxis-proxy.io \
+kubectl get crd agenttoolproviders.grid.praxis.fast gridnetworks.grid.praxis.fast \
+  gridsites.grid.praxis.fast inferenceproviders.grid.praxis.fast \
   -o custom-columns='NAME:.metadata.name,RELEASE:.metadata.annotations.meta\.helm\.sh/release-name'
 ```
 
@@ -125,7 +125,7 @@ helm upgrade grid-operator oci://ghcr.io/praxis-proxy/charts/grid-operator \
 With an older Helm, mark them as owned by the release, then upgrade as usual:
 
 ```bash
-RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders gridnetworks gridsites inferenceproviders; do kubectl label crd "${crd}.grid.praxis-proxy.io" app.kubernetes.io/managed-by=Helm --overwrite; kubectl annotate crd "${crd}.grid.praxis-proxy.io" meta.helm.sh/release-name="${RELEASE}" meta.helm.sh/release-namespace="${NAMESPACE}" --overwrite; done
+RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders gridnetworks gridsites inferenceproviders; do kubectl label crd "${crd}.grid.praxis.fast" app.kubernetes.io/managed-by=Helm --overwrite; kubectl annotate crd "${crd}.grid.praxis.fast" meta.helm.sh/release-name="${RELEASE}" meta.helm.sh/release-namespace="${NAMESPACE}" --overwrite; done
 ```
 
 ## Values

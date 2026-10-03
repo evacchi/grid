@@ -80,7 +80,7 @@ for SITE in $SITE_NAMES; do
   CONTEXT=$(yq eval ".sites.${SITE}.context" "$INVENTORY")
 
   OVERLAY_CM=$(kubectl --context "$CONTEXT" -n grid-system \
-    get configmap -l grid.praxis-proxy.io/network \
+    get configmap -l grid.praxis.fast/network \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
   if [[ -n "$OVERLAY_CM" ]]; then
     echo "  PASS  $SITE: routing overlay present ($OVERLAY_CM)"
@@ -140,7 +140,7 @@ if [[ -n "$CONSUMER_SITE" ]]; then
   CONTEXT=$(yq eval ".sites.${CONSUMER_SITE}.context" "$INVENTORY")
 
   TEST_MODEL=$(kubectl --context "$CONTEXT" -n grid-system \
-    get configmap -l grid.praxis-proxy.io/network \
+    get configmap -l grid.praxis.fast/network \
     -o jsonpath='{.items[0].data.routing-config\.json}' 2>/dev/null \
     | jq -r '.candidates[0].name // empty' 2>/dev/null || echo "")
   if [[ -z "$TEST_MODEL" ]]; then

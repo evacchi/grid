@@ -1,4 +1,4 @@
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: vcr-west-provider
@@ -13,7 +13,7 @@ spec:
       contextWindow: 4096
   siteSelector:
     matchLabels:
-      grid.praxis-proxy.io/provider-site: west-provider
+      grid.praxis.fast/provider-site: west-provider
   accessPolicy:
     siteSelector:
       matchLabels: {}

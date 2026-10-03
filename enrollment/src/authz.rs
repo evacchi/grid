@@ -8,7 +8,7 @@
 //!   - [`Authorizer::Local`] is the grid-admin token table, the standalone, cluster-free default. A valid token
 //!     authorizes the action.
 //!   - `Authorizer::Kube` (feature `sar`) reuses Kubernetes RBAC. The bearer is authenticated with a `TokenReview`, and
-//!     the action authorized with a `SubjectAccessReview` against the virtual `grid.praxis-proxy.io/enrollmenttokens`
+//!     the action authorized with a `SubjectAccessReview` against the virtual `grid.praxis.fast/enrollmenttokens`
 //!     resource. Permissions are ordinary `Roles` or `ClusterRoles`, no CRD required.
 //!
 //! Reaching the review APIs needs only a `ServiceAccount` bound to
@@ -18,7 +18,7 @@ use crate::auth::GridAdmins;
 
 /// The virtual apiGroup grid-admin permissions are written against.
 #[cfg(feature = "sar")]
-const ENROLLMENTS_GROUP: &str = "grid.praxis-proxy.io";
+const ENROLLMENTS_GROUP: &str = "grid.praxis.fast";
 
 /// The pod's namespace, as the kubelet mounts it with the service account token.
 #[cfg(feature = "sar")]
@@ -496,7 +496,7 @@ mod tests {
         };
         let attributes = resource_attributes("grid", operation);
         assert_eq!(attributes.namespace.as_deref(), Some("grid"), "namespace");
-        assert_eq!(attributes.group.as_deref(), Some("grid.praxis-proxy.io"), "group");
+        assert_eq!(attributes.group.as_deref(), Some("grid.praxis.fast"), "group");
         assert_eq!(attributes.resource.as_deref(), Some("enrollmenttokens"), "resource");
         assert_eq!(attributes.verb.as_deref(), Some("create"), "verb");
     }

@@ -206,7 +206,7 @@ reset_grid() {
   for ctx in "$HUB_CTX" "$SITE_CTX"; do
     # Grid resources first, while the operator can still drop its finalizers.
     uninstall "$ctx" "$NS" grid-gateway grid-site
-    if kubectl --context "$ctx" get crd gridsites.grid.praxis-proxy.io >/dev/null 2>&1; then
+    if kubectl --context "$ctx" get crd gridsites.grid.praxis.fast >/dev/null 2>&1; then
       k "$ctx" delete gridsites,gridnetworks,inferenceproviders --all --wait --timeout 2m >/dev/null || true
     fi
     uninstall "$ctx" "$NS" grid-operator
@@ -238,7 +238,7 @@ copy_key() {
   local from=$1 ns=$2 to=$3 name=$4 key=$5 site=${6:-}
   kubectl --context "$from" -n "$ns" get secret "$name" -o jsonpath="{.data.${key//./\\.}}" | base64 -d \
     | kubectl --context "$to" -n "$NS" create secret generic "$name" --from-file="$key=/dev/stdin" >/dev/null || return 1
-  [[ -z $site ]] || kubectl --context "$to" -n "$NS" label secret "$name" "grid.praxis-proxy.io/site=$site" >/dev/null
+  [[ -z $site ]] || kubectl --context "$to" -n "$NS" label secret "$name" "grid.praxis.fast/site=$site" >/dev/null
 }
 
 # Test-only overrides: this run's images, fixed LoadBalancer addresses, the mock model,
@@ -313,10 +313,10 @@ install_site() {
   copy_key "$HUB_CTX" "$ENS" "$SITE_CTX" grid-ca-bundle ca.crt || die "copy the site CA bundle"
   copy_key "$HUB_CTX" "$ENS" "$SITE_CTX" "grid-invite-$SITE" token "$SITE" || die "copy the site invite"
   copy_key "$HUB_CTX" "$NS" "$SITE_CTX" grid-swim-key key || die "copy the SWIM key"
-  if [[ $(k "$SITE_CTX" get secret "grid-invite-$SITE" -o jsonpath='{.metadata.labels.grid\.praxis-proxy\.io/site}') == "$SITE" ]]; then
+  if [[ $(k "$SITE_CTX" get secret "grid-invite-$SITE" -o jsonpath='{.metadata.labels.grid\.praxis\.fast/site}') == "$SITE" ]]; then
     pass "copied grid-ca-bundle, grid-invite-$SITE (site label set), and grid-swim-key to the site"
   else
-    fail "copied invite lacks its grid.praxis-proxy.io/site label"
+    fail "copied invite lacks its grid.praxis.fast/site label"
   fi
   helm_on "$SITE_CTX" "$NS" grid-site grid-site \
     --set gridNetwork.gridId="$PREFIX-e2e" --set "gridSite.name=$SITE" --set "peers.hub.digest=$HUB_DIGEST" \

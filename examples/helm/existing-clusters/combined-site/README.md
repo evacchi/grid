@@ -89,7 +89,7 @@ helm upgrade --install provider-gateway ../../../../charts/praxis-gateway \
 # 5. Wait for overlay ConfigMap
 kubectl --context "$EAST_A_CONTEXT" -n grid-system \
   wait --for=jsonpath='{.metadata.name}' \
-  configmap -l grid.praxis-proxy.io/network --timeout=120s
+  configmap -l grid.praxis.fast/network --timeout=120s
 
 # 6. Consumer gateway
 helm upgrade --install consumer-gateway ../../../../charts/praxis-gateway \

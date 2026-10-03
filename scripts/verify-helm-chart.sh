@@ -1137,8 +1137,8 @@ if [ "${KIND:-}" = "1" ] || [ "${1:-}" = "--kind" ]; then
     fail "kind: operator install"
   fi
 
-  for crd in agenttoolproviders.grid.praxis-proxy.io gridnetworks.grid.praxis-proxy.io gridsites.grid.praxis-proxy.io \
-    inferenceproviders.grid.praxis-proxy.io; do
+  for crd in agenttoolproviders.grid.praxis.fast gridnetworks.grid.praxis.fast gridsites.grid.praxis.fast \
+    inferenceproviders.grid.praxis.fast; do
     if kubectl --context "$KCTX" get crd "$crd" >/dev/null 2>&1; then
       pass "kind: crd $crd established"
     else
@@ -1212,7 +1212,7 @@ if [ "${KIND:-}" = "1" ] || [ "${1:-}" = "--kind" ]; then
   fi
 
   kubectl --context "$KCTX" apply -f - <<'CR_EOF' 2>/dev/null || true
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: helm-test-site
@@ -1226,8 +1226,8 @@ CR_EOF
     fail "kind: operator uninstall"
   fi
 
-  for crd in agenttoolproviders.grid.praxis-proxy.io gridnetworks.grid.praxis-proxy.io gridsites.grid.praxis-proxy.io \
-    inferenceproviders.grid.praxis-proxy.io; do
+  for crd in agenttoolproviders.grid.praxis.fast gridnetworks.grid.praxis.fast gridsites.grid.praxis.fast \
+    inferenceproviders.grid.praxis.fast; do
     if kubectl --context "$KCTX" get crd "$crd" >/dev/null 2>&1; then
       pass "kind: crd $crd retained after uninstall"
     else

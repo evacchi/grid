@@ -24,7 +24,7 @@ use crate::{
 pub(crate) const SERVING_CONFIG_KEY: &str = "serving-config.json";
 
 /// Annotation carrying the SHA-256 of the rendered config, for pod rollouts.
-pub(crate) const ANNOTATION_DIGEST: &str = "grid.praxis-proxy.io/serving-digest";
+pub(crate) const ANNOTATION_DIGEST: &str = "grid.praxis.fast/serving-digest";
 
 /// Label telling the serving `ConfigMap` apart from the overlay's.
 const COMPONENT_LABEL: &str = "app.kubernetes.io/component";

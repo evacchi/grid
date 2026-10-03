@@ -367,8 +367,8 @@ spec:
                 mountPath: "/etc/praxis/credentials/vcr-inference-secondary"
                 optional: true
             podLabels:
-              grid.praxis-proxy.io/backend-access: "provider-gateway"
-              grid.praxis-proxy.io/provider-site: "{{ cluster.name }}"
+              grid.praxis.fast/backend-access: "provider-gateway"
+              grid.praxis.fast/provider-site: "{{ cluster.name }}"
         - type: manifest
           path: resources/backend-network-policy.yaml
         - type: wait
@@ -437,7 +437,7 @@ spec:
               enabled: true
               existingSecret: "edge-gateway-tls"
             podLabels:
-              grid.praxis-proxy.io/edge-site: "{{ cluster.name }}"
+              grid.praxis.fast/edge-site: "{{ cluster.name }}"
         - type: wait
           resource: deployment/edge-gateway
           namespace: grid-system

@@ -133,7 +133,7 @@ fn the_invite_secret_carries_the_token_and_its_id() {
     );
     let annotations = secret.metadata.annotations.unwrap_or_default();
     assert_eq!(
-        annotations.get("grid.praxis-proxy.io/token-id").map(String::as_str),
+        annotations.get("grid.praxis.fast/token-id").map(String::as_str),
         Some("00000000-0000-0000-0000-000000000000"),
         "the token id is kept for revocation"
     );

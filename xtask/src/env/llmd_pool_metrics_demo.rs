@@ -1322,7 +1322,7 @@ fn set_simulator_waiting_requests(
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "grid.praxis-proxy.io/fake-waiting-requests": waiting_requests.to_string()
+                            "grid.praxis.fast/fake-waiting-requests": waiting_requests.to_string()
                         }
                     }
                 }
@@ -2864,7 +2864,7 @@ fn trigger_gridnetwork_reconcile(cluster: &str) {
                 "annotate",
                 "gridnetwork",
                 GRID_NETWORK_NAME,
-                &format!("grid.praxis-proxy.io/metrics-refresh-at={ts}"),
+                &format!("grid.praxis.fast/metrics-refresh-at={ts}"),
                 "--overwrite",
             ])
             .output(),

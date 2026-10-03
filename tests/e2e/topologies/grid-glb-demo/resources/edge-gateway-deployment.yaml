@@ -18,7 +18,7 @@ spec:
         app.kubernetes.io/name: edge-gateway
         app.kubernetes.io/component: public-edge
         app.kubernetes.io/part-of: grid-glb-demo
-        grid.praxis-proxy.io/edge-site: "{{ cluster.name }}"
+        grid.praxis.fast/edge-site: "{{ cluster.name }}"
     spec:
       automountServiceAccountToken: false
       securityContext:

@@ -13,7 +13,7 @@ Verify the operator is running:
 {{- if .Values.crds.enabled }}
 CRDs install and upgrade with this release{{ if .Values.crds.keep }} and stay on uninstall{{ end }}:
 
-  kubectl api-resources --api-group=grid.praxis-proxy.io
+  kubectl api-resources --api-group=grid.praxis.fast
 {{- else }}
 crds.enabled is false: the platform installs the Grid CRDs.
 {{- end }}

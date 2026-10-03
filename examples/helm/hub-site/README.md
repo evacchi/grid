@@ -33,7 +33,7 @@ kubectl -n grid-enrollment get secret grid-ca-bundle -o jsonpath='{.data.ca\.crt
   | kubectl -n grid create secret generic grid-ca-bundle --from-file=ca.crt=/dev/stdin
 kubectl -n grid-enrollment get secret grid-invite-hub -o jsonpath='{.data.token}' | base64 -d \
   | kubectl -n grid create secret generic grid-invite-hub --from-file=token=/dev/stdin
-kubectl -n grid label secret grid-invite-hub grid.praxis-proxy.io/site=hub
+kubectl -n grid label secret grid-invite-hub grid.praxis.fast/site=hub
 head -c 32 /dev/urandom | kubectl -n grid create secret generic grid-swim-key --from-file=key=/dev/stdin
 helm upgrade --install grid-site charts/grid-site -n grid \
   --set gridNetwork.gridId=grid-1 --set gridSite.name=hub --set peers.site-a.address=203.0.113.20:8080
@@ -56,7 +56,7 @@ kubectl --context hub -n grid-enrollment get secret grid-ca-bundle -o jsonpath='
   | kubectl -n grid create secret generic grid-ca-bundle --from-file=ca.crt=/dev/stdin
 kubectl --context hub -n grid-enrollment get secret grid-invite-site-a -o jsonpath='{.data.token}' | base64 -d \
   | kubectl -n grid create secret generic grid-invite-site-a --from-file=token=/dev/stdin
-kubectl -n grid label secret grid-invite-site-a grid.praxis-proxy.io/site=site-a
+kubectl -n grid label secret grid-invite-site-a grid.praxis.fast/site=site-a
 kubectl --context hub -n grid get secret grid-swim-key -o jsonpath='{.data.key}' | base64 -d \
   | kubectl -n grid create secret generic grid-swim-key --from-file=key=/dev/stdin
 helm upgrade --install grid-site charts/grid-site -n grid \
@@ -103,7 +103,7 @@ Each operator routes to a peer only once a probe of its gateway, at the peer `ad
 
 ## Operations
 
-A gateway with `gridServing` reads the operator's serving config only at start. After you add a site or rotate a pin, run `kubectl -n grid rollout restart deploy/grid-gateway` once the `grid.praxis-proxy.io/serving-digest` annotation on its `grid-serving-*` ConfigMap changes. The static install in this example rolls the gateway through its own chart upgrade.
+A gateway with `gridServing` reads the operator's serving config only at start. After you add a site or rotate a pin, run `kubectl -n grid rollout restart deploy/grid-gateway` once the `grid.praxis.fast/serving-digest` annotation on its `grid-serving-*` ConfigMap changes. The static install in this example rolls the gateway through its own chart upgrade.
 
 ### Remove a Site
 

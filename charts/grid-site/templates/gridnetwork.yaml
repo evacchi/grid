@@ -1,13 +1,13 @@
 {{- include "grid-site.normalize" . }}
 {{- if .Values.gridNetwork.name }}
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: {{ .Values.gridNetwork.name }}
   labels:
     {{- include "grid-site.labels" . | nindent 4 }}
     {{- if .Values.gridNetwork.autoDiscoverSites }}
-    grid.praxis-proxy.io/auto-discover-sites: "true"
+    grid.praxis.fast/auto-discover-sites: "true"
     {{- end }}
 spec:
   {{- /*

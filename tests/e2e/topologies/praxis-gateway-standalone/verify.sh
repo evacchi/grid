@@ -126,8 +126,8 @@ stage_release() {
   [ "$kinds" = "ConfigMap Deployment Service" ] || fail "release manifest kinds are [$kinds], want [ConfigMap Deployment Service]"
   pass "the release holds only a ConfigMap, Deployment, and Service"
 
-  crds=$(kubectl --context "$CTX" get crd -o name | { grep -c 'praxis-proxy\.io' || true; })
-  [ "$crds" = 0 ] || fail "found $crds praxis-proxy.io CRDs; the chart must not need them"
+  crds=$(kubectl --context "$CTX" get crd -o name | { grep -c 'grid\.praxis\.fast' || true; })
+  [ "$crds" = 0 ] || fail "found $crds grid.praxis.fast CRDs; the chart must not need them"
   pass "no Grid CRDs exist in the cluster"
 
   namespaces=$(kubectl --context "$CTX" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' \

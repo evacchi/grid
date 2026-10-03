@@ -100,7 +100,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ${role_kind}
 metadata: {name: grid-enrollment-admin${ns_meta:+, ${ns_meta}}}
 rules:
-  - apiGroups: [grid.praxis-proxy.io]
+  - apiGroups: [grid.praxis.fast]
     resources: [enrollmenttokens]
     verbs: [create, delete]
 ---

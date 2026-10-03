@@ -5,7 +5,7 @@ metadata:
   namespace: grid-system
   labels:
     app.kubernetes.io/part-of: grid-glb-demo
-    grid.praxis-proxy.io/policy-type: provider-access
+    grid.praxis.fast/policy-type: provider-access
 data:
   policy.json: |
     {

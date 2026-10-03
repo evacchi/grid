@@ -190,7 +190,7 @@ mod tests {
             spec["zone"] = serde_json::json!(z);
         }
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridSite",
             "metadata": { "name": name },
             "spec": spec

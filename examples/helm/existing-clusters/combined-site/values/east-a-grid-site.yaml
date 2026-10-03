@@ -36,7 +36,7 @@ inferenceProviders:
     endpoint: "http://mock-inference-a.grid-system.svc.cluster.local:8080"
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/provider-site: east-a
+        grid.praxis.fast/provider-site: east-a
     accessPolicy:
       siteSelector:
         matchLabels: {}

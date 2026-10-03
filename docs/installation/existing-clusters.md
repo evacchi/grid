@@ -213,7 +213,7 @@ The operator computes `stable_id` as a deterministic FNV-1a hash of
 the stable IDs from the overlay data:
 
 ```bash
-kubectl get configmap -l grid.praxis-proxy.io/network \
+kubectl get configmap -l grid.praxis.fast/network \
   -n grid-system -o jsonpath='{.items[0].data.routing-config\.json}' \
   | jq -r '.candidates[] | .name + " stable_id=" + .stable_id'
 ```
@@ -223,19 +223,19 @@ configuration.
 
 ## GridSite Labels
 
-Each GridSite must carry the `grid.praxis-proxy.io/provider-site` label
+Each GridSite must carry the `grid.praxis.fast/provider-site` label
 matching the value used in InferenceProvider `siteSelector.matchLabels`.
 Without this label, the operator finds no matching sites for the
 InferenceProvider, produces zero overlay candidates, and never creates
 the overlay ConfigMap.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: east2
   labels:
-    grid.praxis-proxy.io/provider-site: east2
+    grid.praxis.fast/provider-site: east2
 spec:
   gridNetworkRef: my-grid
   region: us-east-2
@@ -442,7 +442,7 @@ Create one InferenceProvider per backend. Both can serve the same model
 between them:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: mock-west1-a         # becomes overlay candidate cluster name
@@ -453,12 +453,12 @@ spec:
   endpoint: "http://mock-inference-a.grid-system.svc.cluster.local:8080"
   siteSelector:
     matchLabels:
-      grid.praxis-proxy.io/provider-site: west1
+      grid.praxis.fast/provider-site: west1
   models:
     - name: sim-model-v1
       capabilities: [text_generation]
 ---
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: mock-west1-b
@@ -469,7 +469,7 @@ spec:
   endpoint: "http://mock-inference-b.grid-system.svc.cluster.local:8080"
   siteSelector:
     matchLabels:
-      grid.praxis-proxy.io/provider-site: west1
+      grid.praxis.fast/provider-site: west1
   models:
     - name: sim-model-v1
       capabilities: [text_generation]
@@ -596,7 +596,7 @@ spec:
 After the overlay converges, read both candidates' stable IDs:
 
 ```bash
-kubectl get configmap -l grid.praxis-proxy.io/network \
+kubectl get configmap -l grid.praxis.fast/network \
   -n grid-system -o jsonpath='{.items[0].data.routing-config\.json}' \
   | jq -r '.candidates[] | .name + " stable_id=" + .stable_id'
 ```
@@ -813,9 +813,9 @@ serviceMonitor:
 Helm does not remove CRDs on uninstall. To remove them:
 
 ```bash
-kubectl delete crd gridnetworks.grid.praxis-proxy.io \
-  gridsites.grid.praxis-proxy.io \
-  inferenceproviders.grid.praxis-proxy.io
+kubectl delete crd gridnetworks.grid.praxis.fast \
+  gridsites.grid.praxis.fast \
+  inferenceproviders.grid.praxis.fast
 ```
 
 ## Troubleshooting
@@ -839,11 +839,11 @@ operator values.
 logs: "routing overlay has no candidates; skipping ConfigMap apply".
 
 **Cause:** No InferenceProvider matches any GridSite. The GridSite is
-missing the `grid.praxis-proxy.io/provider-site` label that the
+missing the `grid.praxis.fast/provider-site` label that the
 InferenceProvider's `siteSelector.matchLabels` requires.
 
 **Fix:** Label the GridSite:
-`kubectl label gridsite east2 grid.praxis-proxy.io/provider-site=east2`
+`kubectl label gridsite east2 grid.praxis.fast/provider-site=east2`
 
 ### TLS handshake failure between gateways
 

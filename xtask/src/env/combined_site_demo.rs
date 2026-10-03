@@ -153,7 +153,7 @@ struct OverlayData {
     /// across clusters).
     resource_version: String,
     /// Content-addressed semantic revision from the
-    /// `grid.praxis-proxy.io/overlay-revision` annotation. Changes only when
+    /// `grid.praxis.fast/overlay-revision` annotation. Changes only when
     /// routing-relevant fields change; safe to compare across clusters.
     semantic_revision: String,
     /// Candidate name to stable ID mapping.
@@ -1124,7 +1124,7 @@ fn assert_site_auto_discovery() -> AssertionResult {
                 let output = Command::new("kubectl")
                     .args([
                         "get", "gridsite",
-                        "-l", "grid.praxis-proxy.io/auto-discovered=true",
+                        "-l", "grid.praxis.fast/auto-discovered=true",
                         "--context", &context,
                         "-n", GRID_SYSTEM_NS,
                         "-o", "jsonpath={range .items[*]}{.metadata.name}\t{.status.phase}\t{.status.reason}\t{.spec.egress.address}\t{.spec.egress.tls.serverName}\t{.spec.trust.canonicalFingerprints}\n{end}",
@@ -1854,7 +1854,7 @@ fn assert_authorization_replacement() -> AssertionResult {
         let direct_output = run_curl_probe_with_flags(
             &context,
             &format!("auth-direct-{cluster}"),
-            &["--labels=grid.praxis-proxy.io/backend-access=provider-gateway"],
+            &["--labels=grid.praxis.fast/backend-access=provider-gateway"],
             &[
                 "curl",
                 "-f",
@@ -2057,7 +2057,7 @@ fn assert_backend_access_denial() -> AssertionResult {
         let provider_control_output = run_curl_probe_with_flags(
             &context,
             &format!("provider-control-{cluster}"),
-            &["--labels=grid.praxis-proxy.io/backend-access=provider-gateway"],
+            &["--labels=grid.praxis.fast/backend-access=provider-gateway"],
             &[
                 "curl",
                 "-f",
@@ -3903,7 +3903,7 @@ fn apply_credential_secret(context: &str, secret_name: &str, token: &str) -> Res
 /// Read a single cluster's overlay ConfigMap and return structured data.
 ///
 /// Captures both the Kubernetes `resourceVersion` (per-cluster) and the
-/// semantic revision from the `grid.praxis-proxy.io/overlay-revision`
+/// semantic revision from the `grid.praxis.fast/overlay-revision`
 /// annotation (content-addressed, safe to compare across clusters).
 fn read_cluster_overlay(cluster: &str) -> Result<OverlayData, Box<dyn std::error::Error>> {
     let context = combined_kubectl_context(cluster);
@@ -3936,7 +3936,7 @@ fn read_cluster_overlay(cluster: &str) -> Result<OverlayData, Box<dyn std::error
         .to_owned();
 
     let semantic_revision = cm
-        .pointer("/metadata/annotations/grid.praxis-proxy.io~1overlay-revision")
+        .pointer("/metadata/annotations/grid.praxis.fast~1overlay-revision")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_owned();
@@ -5637,12 +5637,12 @@ fn create_external_provider_secret(
 
 /// Label key the operator places on `GridSite` resources and expects in
 /// `InferenceProvider.spec.siteSelector.matchLabels`.
-const GRIDSITE_PROVIDER_LABEL: &str = "grid.praxis-proxy.io/provider-site";
+const GRIDSITE_PROVIDER_LABEL: &str = "grid.praxis.fast/provider-site";
 
 /// Render the `InferenceProvider` manifest for an external provider.
 fn external_inference_provider_manifest(external_provider: &ExternalProviderDescriptor, site: &str) -> String {
     format!(
-        r#"apiVersion: grid.praxis-proxy.io/v1alpha1
+        r#"apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: {resource_name}
@@ -5822,7 +5822,7 @@ spec:
     let routing_cluster = format!("vcr-{site}-provider-secondary");
     let label = GRIDSITE_PROVIDER_LABEL;
     let inference_provider = format!(
-        r#"apiVersion: grid.praxis-proxy.io/v1alpha1
+        r#"apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: {provider_name}
@@ -8264,7 +8264,7 @@ spec:
                 "site {site}: label value must match site name",
             );
             assert!(
-                label_map.get("grid.praxis-proxy.io/combined-site").is_none(),
+                label_map.get("grid.praxis.fast/combined-site").is_none(),
                 "site {site}: must not use stale combined-site label key",
             );
         }

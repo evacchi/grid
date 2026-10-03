@@ -355,7 +355,7 @@ Validate enabled mounts have a non-empty resource name.
 {{- fail "gridServing needs gridServing.network, the GridNetwork name, or gridServing.configMap" }}
 {{- end }}
 {{- if gt (len $name) 63 }}
-{{- fail (printf "gridServing: the operator hash-suffixes %s; set gridServing.configMap to the ConfigMap labeled grid.praxis-proxy.io/gateway" $name) }}
+{{- fail (printf "gridServing: the operator hash-suffixes %s; set gridServing.configMap to the ConfigMap labeled grid.praxis.fast/gateway" $name) }}
 {{- end }}
 {{- if not (and $.Values.tls.enabled $.Values.tls.existingSecret $.Values.tls.caSecret) }}
 {{- fail "gridServing polls peers with the grid identity: set tls.enabled, tls.existingSecret, and tls.caSecret" }}

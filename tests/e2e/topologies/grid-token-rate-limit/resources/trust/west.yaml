@@ -1,10 +1,10 @@
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: grid-token-rate-limit-central
   labels:
-    grid.praxis-proxy.io/network: grid-token-rate-limit
-    grid.praxis-proxy.io/auto-discovered: "true"
+    grid.praxis.fast/network: grid-token-rate-limit
+    grid.praxis.fast/auto-discovered: "true"
 spec:
   gridNetworkRef: grid-token-rate-limit
   egress:
@@ -16,13 +16,13 @@ spec:
     canonicalFingerprints:
       - PEER_CENTRAL_FINGERPRINT
 ---
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: grid-token-rate-limit-east
   labels:
-    grid.praxis-proxy.io/network: grid-token-rate-limit
-    grid.praxis-proxy.io/auto-discovered: "true"
+    grid.praxis.fast/network: grid-token-rate-limit
+    grid.praxis.fast/auto-discovered: "true"
 spec:
   gridNetworkRef: grid-token-rate-limit
   egress:

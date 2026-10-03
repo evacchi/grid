@@ -156,13 +156,13 @@ const AI_ROUTING_REQUEST_ID_HEADER: &str = "x-ai-routing-request-id";
 const PROVIDER_GATEWAY_RESPONSE_HEADER: &str = "x-ai-demo-provider-gateway";
 
 /// Overlay envelope `ConfigMap` annotation for the schema version.
-const OVERLAY_ANNOTATION_SCHEMA: &str = "grid.praxis-proxy.io/overlay-schema-version";
+const OVERLAY_ANNOTATION_SCHEMA: &str = "grid.praxis.fast/overlay-schema-version";
 
 /// Overlay envelope `ConfigMap` annotation for the semantic revision.
-const OVERLAY_ANNOTATION_REVISION: &str = "grid.praxis-proxy.io/overlay-revision";
+const OVERLAY_ANNOTATION_REVISION: &str = "grid.praxis.fast/overlay-revision";
 
 /// Overlay envelope `ConfigMap` annotation for the content digest.
-const OVERLAY_ANNOTATION_DIGEST: &str = "grid.praxis-proxy.io/overlay-content-digest";
+const OVERLAY_ANNOTATION_DIGEST: &str = "grid.praxis.fast/overlay-content-digest";
 
 /// External credential sent to the edge; intentionally differs from provider auth.
 const CLIENT_BEARER_TOKEN: &str = "test-token";
@@ -642,7 +642,7 @@ pub(crate) fn apply_openai_inference_provider(
     ext: &ExternalProviderDescriptor,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = format!(
-        "apiVersion: grid.praxis-proxy.io/v1alpha1
+        "apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: {name}
@@ -656,7 +656,7 @@ spec:
   routingClusterRef: {routing_cluster}
   siteSelector:
     matchLabels:
-      grid.praxis-proxy.io/provider-site: east-provider
+      grid.praxis.fast/provider-site: east-provider
   accessPolicy:
     siteSelector:
       matchLabels: {{}}
@@ -1972,7 +1972,7 @@ fn check_one_backend_network_boundary(
     let allowed = run_probe_pod(
         context,
         &allowed_name,
-        Some("grid.praxis-proxy.io/backend-access=provider-gateway"),
+        Some("grid.praxis.fast/backend-access=provider-gateway"),
         target,
         mode,
     )?;
@@ -4319,7 +4319,7 @@ fn refresh_provider(provider: &str) -> Result<(), Box<dyn std::error::Error>> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let annotation = format!("grid.praxis-proxy.io/demo-refresh={revision}");
+    let annotation = format!("grid.praxis.fast/demo-refresh={revision}");
     let output = Command::new("kubectl")
         .args([
             "--context",
@@ -4356,7 +4356,7 @@ fn clear_provider_refresh(provider: &str) -> Result<(), Box<dyn std::error::Erro
             "annotate",
             "inferenceprovider",
             resource,
-            "grid.praxis-proxy.io/demo-refresh-",
+            "grid.praxis.fast/demo-refresh-",
         ])
         .output()?;
     if !output.status.success() {
@@ -5109,10 +5109,10 @@ clusters:
         let forge = fs::read_to_string(root.join("tests/e2e/topologies/grid-glb-demo/forge.yaml"))
             .unwrap_or_else(|_| std::process::abort());
 
-        assert!(policy.contains("grid.praxis-proxy.io/backend-access: provider-gateway"));
+        assert!(policy.contains("grid.praxis.fast/backend-access: provider-gateway"));
         assert!(policy.contains("app.kubernetes.io/name: grid-operator"));
         assert!(
-            forge.contains("grid.praxis-proxy.io/backend-access"),
+            forge.contains("grid.praxis.fast/backend-access"),
             "forge.yaml must set the backend-access pod label on provider gateways"
         );
     }
@@ -5166,7 +5166,7 @@ clusters:
         for expected in [
             "name: vcr-east-provider-secondary",
             "routingClusterRef: vcr-east-provider-secondary",
-            "grid.praxis-proxy.io/provider-site: east-provider",
+            "grid.praxis.fast/provider-site: east-provider",
             "name: Qwen/Qwen3-0.6B",
         ] {
             assert!(secondary.contains(expected), "secondary provider missing {expected}");
@@ -5237,7 +5237,7 @@ clusters:
                 .unwrap_or_else(|_| std::process::abort());
             let site = fs::read_to_string(resources.join(format!("site-{provider}.yaml")))
                 .unwrap_or_else(|_| std::process::abort());
-            let selector = format!("grid.praxis-proxy.io/provider-site: {provider}");
+            let selector = format!("grid.praxis.fast/provider-site: {provider}");
             assert!(
                 inference.contains(&selector),
                 "{provider} provider must select only its local site"
@@ -5606,9 +5606,9 @@ clusters:
     #[test]
     fn annotation_parse_reads_dotted_keys() {
         let annotations = serde_json::json!({
-            "grid.praxis-proxy.io/overlay-schema-version": "1.0.0",
-            "grid.praxis-proxy.io/overlay-revision": "abc123",
-            "grid.praxis-proxy.io/overlay-content-digest": "abc123",
+            "grid.praxis.fast/overlay-schema-version": "1.0.0",
+            "grid.praxis.fast/overlay-revision": "abc123",
+            "grid.praxis.fast/overlay-content-digest": "abc123",
             "kubectl.kubernetes.io/last-applied-configuration": "{}"
         });
         let raw = serde_json::to_string(&annotations).unwrap_or_else(|_| std::process::abort());

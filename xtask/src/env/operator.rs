@@ -509,7 +509,7 @@ pub(crate) const SITE_JOIN_JOINING_MODEL: &str = "model-sjd-joining";
 ///
 /// The value is the site role string (e.g. `"primary"`, `"joining"`, `"wrong"`).
 /// Harness-only: production site labels are not required to follow this pattern.
-pub(crate) const SITE_JOIN_LABEL_KEY: &str = "grid.praxis-proxy.io/sjd-site";
+pub(crate) const SITE_JOIN_LABEL_KEY: &str = "grid.praxis.fast/sjd-site";
 
 /// Egress address for the primary site (Kind east-cluster node IP + TLS port).
 ///
@@ -982,7 +982,7 @@ pub(crate) fn apply_test_fixtures_for_cluster(
 /// resolve to `LocalityTier::SameSite`.
 fn network_fixture_json(name: &str, gw_name: &str, gw_ns: &str, local_site_name: &str) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": name },
         "spec": {
@@ -1020,7 +1020,7 @@ fn provider_fixture_json(
         s.insert("routingClusterRef".to_owned(), serde_json::Value::String(r.to_owned()));
     }
     serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": name },
         "spec": spec
@@ -1044,7 +1044,7 @@ fn provider_fixture_json(
 /// exists.
 pub(crate) fn apply_agent_tool_provider_network_fixtures(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": AGENT_TOOL_TEST_NETWORK },
         "spec": {}
@@ -1054,7 +1054,7 @@ pub(crate) fn apply_agent_tool_provider_network_fixtures(context: &str) -> Resul
         std::process::exit(1);
     });
     let site = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridSite",
         "metadata": { "name": AGENT_TOOL_TEST_SITE },
         "spec": { "gridNetworkRef": AGENT_TOOL_TEST_NETWORK }
@@ -1075,7 +1075,7 @@ pub(crate) fn apply_agent_tool_provider(
     endpoint: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "AgentToolProvider",
         "metadata": { "name": name },
         "spec": {
@@ -1704,7 +1704,7 @@ pub(crate) fn wait_for_swim_convergence(duration: Duration) {
 /// SWIM snapshot from the running operators.
 pub(crate) fn apply_swim_test_network(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_TEST_NETWORK },
         "spec": { "seeds": [] }
@@ -1743,7 +1743,7 @@ pub(crate) fn apply_swim_test_network_with_seeds(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let seeds_json: Vec<String> = seeds.iter().map(SocketAddr::to_string).collect();
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": CRD_SEEDS_TEST_NETWORK },
         "spec": { "seeds": seeds_json }
@@ -1775,7 +1775,7 @@ pub(crate) fn cleanup_swim_crd_seeds_test_resources(context: &str) -> Result<(),
 /// reconciling the owning `GridNetwork`.
 pub(crate) fn apply_swim_test_provider(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_TEST_PROVIDER },
         "spec": {
@@ -2128,7 +2128,7 @@ pub(crate) fn bump_gridnetwork(context: &str, name: &str) -> Result<(), Box<dyn 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let annotation = format!("grid.praxis-proxy.io/reconcile-at={ts}");
+    let annotation = format!("grid.praxis.fast/reconcile-at={ts}");
     let status = Command::new("kubectl")
         .args([
             "--context",
@@ -2159,7 +2159,7 @@ pub(crate) fn bump_gridsite(context: &str, name: &str) -> Result<(), Box<dyn std
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let annotation = format!("grid.praxis-proxy.io/reconcile-at={ts}");
+    let annotation = format!("grid.praxis.fast/reconcile-at={ts}");
     let status = Command::new("kubectl")
         .args([
             "--context",
@@ -2724,7 +2724,7 @@ pub(crate) fn apply_metrics_provider_fixtures(
         ),
     ] {
         let manifest = serde_json::to_string_pretty(&serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "InferenceProvider",
             "metadata": { "name": name },
             "spec": {
@@ -2813,7 +2813,7 @@ pub(crate) fn apply_metrics_routing_fixtures(
     west_metrics_port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": METRICS_ROUTING_NETWORK },
         "spec": {
@@ -2832,7 +2832,7 @@ pub(crate) fn apply_metrics_routing_fixtures(
     ] {
         let endpoint = format!("http://127.0.0.1:{port}");
         let manifest = serde_json::to_string_pretty(&serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "InferenceProvider",
             "metadata": { "name": name },
             "spec": {
@@ -3002,7 +3002,7 @@ pub(crate) fn verify_metrics_routing_overlay(
 /// the non-2xx response to `Degraded`.
 pub(crate) fn apply_degraded_provider_fixture(context: &str, endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": TEST_PROVIDER_DEGRADED },
         "spec": {
@@ -3060,7 +3060,7 @@ pub(crate) fn apply_provider_with_health_check_tls_key_missing_fixture(
     apply_tls_key_missing_ca_secret(context)?;
 
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": TEST_PROVIDER_TLS_KEY_MISSING },
         "spec": {
@@ -3093,7 +3093,7 @@ pub(crate) fn apply_provider_with_health_check_tls_key_missing_fixture(
 /// regardless of the order they were applied.
 pub(crate) fn apply_api_provider_fixture(context: &str, endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": TEST_PROVIDER_API },
         "spec": {
@@ -3254,7 +3254,7 @@ fn network_fixture_with_consumer_config_json(
     cluster_endpoints: &serde_json::Value,
 ) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": name },
         "spec": {
@@ -3694,7 +3694,7 @@ pub(crate) fn apply_full_grid_fixtures(
     api_endpoint: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": FULL_GRID_NETWORK },
         "spec": {
@@ -3708,7 +3708,7 @@ pub(crate) fn apply_full_grid_fixtures(
     });
 
     let east = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FULL_GRID_PROVIDER_EAST },
         "spec": {
@@ -3726,7 +3726,7 @@ pub(crate) fn apply_full_grid_fixtures(
     });
 
     let west = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FULL_GRID_PROVIDER_WEST },
         "spec": {
@@ -3744,7 +3744,7 @@ pub(crate) fn apply_full_grid_fixtures(
     });
 
     let cloud = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FULL_GRID_PROVIDER_CLOUD },
         "spec": {
@@ -3761,7 +3761,7 @@ pub(crate) fn apply_full_grid_fixtures(
     });
 
     let api = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FULL_GRID_PROVIDER_API },
         "spec": {
@@ -3941,7 +3941,7 @@ pub(crate) fn apply_swim_overlay_test_fixtures(
     primary_site_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_OVERLAY_NETWORK },
         "spec": {
@@ -3958,7 +3958,7 @@ pub(crate) fn apply_swim_overlay_test_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_OVERLAY_PROVIDER },
         "spec": {
@@ -4156,7 +4156,7 @@ pub(crate) fn apply_tls_verified_gridsite_for_eligibility(
         .output()?;
     if !patch_out.status.success() {
         let create_spec = serde_json::to_string_pretty(&serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridSite",
             "metadata": { "name": site_k8s_name },
             "spec": {
@@ -4444,7 +4444,7 @@ pub(crate) fn restart_tls_probe_server(
 )]
 pub(crate) fn apply_rotation_test_fixtures(context: &str, site_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": ROTATION_NETWORK },
         "spec": {
@@ -4461,7 +4461,7 @@ pub(crate) fn apply_rotation_test_fixtures(context: &str, site_name: &str) -> Re
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": ROTATION_PROVIDER },
         "spec": {
@@ -4492,7 +4492,7 @@ pub(crate) fn apply_rotation_test_fixtures(context: &str, site_name: &str) -> Re
 /// routing eligibility gate on the primary operator's overlay.
 pub(crate) fn apply_rotation_remote_provider(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": ROTATION_REMOTE_PROVIDER },
         "spec": {
@@ -4544,7 +4544,7 @@ pub(crate) fn apply_convergence_test_fixtures(
     site_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": CONVERGENCE_NETWORK },
         "spec": {
@@ -4561,7 +4561,7 @@ pub(crate) fn apply_convergence_test_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": CONVERGENCE_PROVIDER },
         "spec": {
@@ -4812,7 +4812,7 @@ pub(crate) fn apply_swim_encrypt_test_fixtures_with_options(
         serde_json::json!({})
     };
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_ENCRYPT_NETWORK },
         "spec": {
@@ -4830,7 +4830,7 @@ pub(crate) fn apply_swim_encrypt_test_fixtures_with_options(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_ENCRYPT_PROVIDER_A },
         "spec": {
@@ -5112,7 +5112,7 @@ pub(crate) fn apply_swim_mesh_test_fixtures(
     model_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_MESH_NETWORK },
         "spec": {
@@ -5129,7 +5129,7 @@ pub(crate) fn apply_swim_mesh_test_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": provider_name },
         "spec": {
@@ -5164,7 +5164,7 @@ pub(crate) fn apply_swim_mesh_test_fixtures(
 )]
 pub(crate) fn apply_swim_mesh_wrong_network_fixtures(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_MESH_WRONG_NETWORK },
         "spec": {
@@ -5181,7 +5181,7 @@ pub(crate) fn apply_swim_mesh_wrong_network_fixtures(context: &str) -> Result<()
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_MESH_WRONG_PROVIDER },
         "spec": {
@@ -5273,14 +5273,14 @@ pub(crate) fn apply_swim_trust_test_fixtures(
     site_a_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": {
             "name": SWIM_TRUST_NETWORK,
             "labels": {
                 // Enable auto-discovery so the operator creates auto-discovered GridSites
                 // and populates publicCertPem when cert broadcasts are received.
-                "grid.praxis-proxy.io/auto-discover-sites": "true"
+                "grid.praxis.fast/auto-discover-sites": "true"
             }
         },
         "spec": {
@@ -5307,7 +5307,7 @@ pub(crate) fn apply_swim_trust_test_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_TRUST_PROVIDER_B },
         "spec": {
@@ -5404,7 +5404,7 @@ pub(crate) fn apply_gridsite_egress(
         None => serde_json::json!({ "mode": "Plaintext" }),
     };
     let spec = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridSite",
         "metadata": { "name": site_k8s_name },
         "spec": {
@@ -5568,7 +5568,7 @@ pub(crate) fn apply_swim_routing_east_fixtures(
     east_model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_ROUTING_NETWORK },
         "spec": {
@@ -5585,7 +5585,7 @@ pub(crate) fn apply_swim_routing_east_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_ROUTING_EAST_PROVIDER },
         "spec": {
@@ -5636,7 +5636,7 @@ pub(crate) fn apply_swim_routing_west_fixtures(
     west_model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SWIM_ROUTING_NETWORK },
         "spec": { "seeds": [] }
@@ -5646,7 +5646,7 @@ pub(crate) fn apply_swim_routing_west_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SWIM_ROUTING_WEST_PROVIDER },
         "spec": {
@@ -5776,7 +5776,7 @@ fn multi_provider_fixture_json(
 ) -> String {
     let models_json: Vec<serde_json::Value> = models.iter().map(|m| serde_json::json!({ "name": m })).collect();
     serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": name },
         "spec": {
@@ -6072,13 +6072,13 @@ fn delete_resource(
 /// `localSiteName` entry used by the operator to locate its own overlay slot.
 pub(crate) fn apply_site_join_network(context: &str, local_site_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": {
             "name": SITE_JOIN_NETWORK,
             // Opt-in label: enables automatic GridSite discovery for Alive SWIM members.
             // Only networks with this label run reconcile_discovered_sites in the controller.
-            "labels": { "grid.praxis-proxy.io/auto-discover-sites": "true" }
+            "labels": { "grid.praxis.fast/auto-discover-sites": "true" }
         },
         "spec": {
             "seeds": [],
@@ -6105,7 +6105,7 @@ pub(crate) fn apply_site_join_network(context: &str, local_site_name: &str) -> R
 /// referencing it stay isolated from [`SITE_JOIN_NETWORK`].
 pub(crate) fn apply_site_join_wrong_network(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": SITE_JOIN_WRONG_NETWORK },
         "spec": { "seeds": [] }
@@ -6135,7 +6135,7 @@ pub(crate) fn apply_gridsite(
     label_value: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridSite",
         "metadata": {
             "name": site_name,
@@ -6333,7 +6333,7 @@ pub(crate) fn apply_site_join_primary_provider(
     model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SITE_JOIN_PRIMARY_PROVIDER },
         "spec": {
@@ -6371,7 +6371,7 @@ pub(crate) fn apply_site_join_joining_provider(
     model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SITE_JOIN_JOINING_PROVIDER },
         "spec": {
@@ -6404,7 +6404,7 @@ pub(crate) fn apply_site_join_joining_provider(
 /// as a candidate in the overlay for [`SITE_JOIN_NETWORK`].
 pub(crate) fn apply_site_join_wrong_provider(context: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": SITE_JOIN_WRONG_PROVIDER },
         "spec": {
@@ -6945,7 +6945,7 @@ pub(crate) fn apply_failover_east_fixtures(
     model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": FAILOVER_NETWORK },
         "spec": {
@@ -6962,7 +6962,7 @@ pub(crate) fn apply_failover_east_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FAILOVER_EAST_PROVIDER },
         "spec": {
@@ -7161,7 +7161,7 @@ pub(crate) fn apply_failover_shared_east_provider(
     east_site: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FAILOVER_SHARED_EAST_PROVIDER },
         "spec": {
@@ -7196,7 +7196,7 @@ pub(crate) fn apply_failover_west_fixtures_with_shared(
     west_site: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": FAILOVER_NETWORK },
         "spec": { "seeds": [] }
@@ -7206,7 +7206,7 @@ pub(crate) fn apply_failover_west_fixtures_with_shared(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": FAILOVER_WEST_PROVIDER },
         "spec": {
@@ -7364,7 +7364,7 @@ pub(crate) fn apply_stale_gc_east_fixtures(
     ttl_secs: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": STALE_GC_NETWORK },
         "spec": {
@@ -7382,7 +7382,7 @@ pub(crate) fn apply_stale_gc_east_fixtures(
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": STALE_GC_EAST_PROVIDER },
         "spec": {
@@ -7414,7 +7414,7 @@ pub(crate) fn apply_stale_gc_east_fixtures(
 #[expect(clippy::too_many_lines, reason = "two JSON manifests with full K8s structure")]
 pub(crate) fn apply_stale_gc_west_fixtures(context: &str, west_site: &str) -> Result<(), Box<dyn std::error::Error>> {
     let network = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "GridNetwork",
         "metadata": { "name": STALE_GC_NETWORK },
         "spec": { "seeds": [] }
@@ -7424,7 +7424,7 @@ pub(crate) fn apply_stale_gc_west_fixtures(context: &str, west_site: &str) -> Re
         std::process::exit(1);
     });
     let provider = serde_json::to_string_pretty(&serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": STALE_GC_WEST_PROVIDER },
         "spec": {
@@ -8574,9 +8574,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let annotation = format!("grid.praxis-proxy.io/reconcile-at={ts}");
+        let annotation = format!("grid.praxis.fast/reconcile-at={ts}");
         assert!(
-            annotation.starts_with("grid.praxis-proxy.io/reconcile-at="),
+            annotation.starts_with("grid.praxis.fast/reconcile-at="),
             "annotation must use the reconcile-at key"
         );
         assert!(ts > 0, "timestamp must be non-zero on a real system");

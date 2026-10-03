@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: gridnetworks.grid.praxis-proxy.io
+  name: gridnetworks.grid.praxis.fast
 spec:
-  group: grid.praxis-proxy.io
+  group: grid.praxis.fast
   names:
     kind: GridNetwork
     plural: gridnetworks

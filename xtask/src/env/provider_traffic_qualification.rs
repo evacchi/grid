@@ -90,7 +90,7 @@ struct OverlayData {
     /// across clusters).
     resource_version: String,
     /// Content-addressed semantic revision from the
-    /// `grid.praxis-proxy.io/overlay-revision` annotation. Changes only when
+    /// `grid.praxis.fast/overlay-revision` annotation. Changes only when
     /// routing-relevant fields change; safe to compare across clusters.
     semantic_revision: String,
     /// Candidate name to stable ID mapping.
@@ -748,7 +748,7 @@ fn assert_site_auto_discovery() -> AssertionResult {
                 let output = Command::new("kubectl")
                     .args([
                         "get", "gridsite",
-                        "-l", "grid.praxis-proxy.io/auto-discovered=true",
+                        "-l", "grid.praxis.fast/auto-discovered=true",
                         "--context", &context,
                         "-n", GRID_SYSTEM_NS,
                         "-o", "jsonpath={range .items[*]}{.metadata.name}\t{.status.phase}\t{.status.reason}\t{.spec.egress.address}\t{.spec.egress.tls.serverName}\t{.spec.trust.canonicalFingerprints}\n{end}",
@@ -1133,7 +1133,7 @@ fn apply_credential_secret(context: &str, secret_name: &str, token: &str) -> Res
 /// Read a single cluster's overlay `ConfigMap` and return structured data.
 ///
 /// Captures both the Kubernetes `resourceVersion` (per-cluster) and the
-/// semantic revision from the `grid.praxis-proxy.io/overlay-revision`
+/// semantic revision from the `grid.praxis.fast/overlay-revision`
 /// annotation (content-addressed, safe to compare across clusters).
 #[expect(
     clippy::too_many_lines,
@@ -1170,7 +1170,7 @@ fn read_cluster_overlay(cluster: &str) -> Result<OverlayData, Box<dyn std::error
         .to_owned();
 
     let semantic_revision = cm
-        .pointer("/metadata/annotations/grid.praxis-proxy.io~1overlay-revision")
+        .pointer("/metadata/annotations/grid.praxis.fast~1overlay-revision")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_owned();

@@ -1,6 +1,6 @@
 # Custom Resource Definitions
 
-API group: `grid.praxis-proxy.io/v1alpha1`
+API group: `grid.praxis.fast/v1alpha1`
 
 The AI Grid Network (AGN) Operator defines these resources to describe sites,
 provider capacity, and routing policy. The established API identities remain
@@ -15,7 +15,7 @@ cluster can host multiple `GridNetworks` for
 multi-tenancy.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: production
@@ -283,12 +283,12 @@ Represents another site in the grid. Created manually
 for seed peers or automatically by SWIM discovery.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridSite
 metadata:
   name: cluster-b
   labels:
-    grid.praxis-proxy.io/network: production
+    grid.praxis.fast/network: production
 spec:
   gridNetworkRef: production
   egress:
@@ -356,7 +356,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 **GridSite phase transitions:**
 
 - Pending → Discovered: the `GridNetwork` controller writes `Discovered` when a remote SWIM
-  peer is first observed as Alive (requires `grid.praxis-proxy.io/auto-discover-sites: "true"`
+  peer is first observed as Alive (requires `grid.praxis.fast/auto-discover-sites: "true"`
   label on the `GridNetwork`).
 - Discovered → Connecting: the `GridSite` controller advances automatically when
   `spec.egress.address` is non-empty. For auto-discovered sites, the egress address comes from
@@ -506,7 +506,7 @@ Represents an inference backend available over the
 grid.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: openai-api
@@ -766,7 +766,7 @@ Each poll increments `grid_model_discovery_total{provider,outcome}`, where
 Represents MCP tool servers available over the grid.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: AgentToolProvider
 metadata:
   name: db-tools
@@ -785,7 +785,7 @@ spec:
   accessPolicy:
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/site: cluster-a
+        grid.praxis.fast/site: cluster-a
 ```
 
 **Phases**: Pending → Available → Unavailable
@@ -828,7 +828,7 @@ telemetry-only labels (`grid_mcp_probe_total`, Events), not persisted to
 Represents A2A agents available over the grid.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: AgentToAgentProvider
 metadata:
   name: claims-agent
@@ -844,7 +844,7 @@ spec:
   accessPolicy:
     siteSelector:
       matchLabels:
-        grid.praxis-proxy.io/site: cluster-a
+        grid.praxis.fast/site: cluster-a
 ```
 
 **Phases**: Pending → Available → Degraded → Unavailable

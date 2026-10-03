@@ -302,7 +302,7 @@ Praxis AI validates required values and bounds before accepting the envelope.
 Provenance supports audit and diagnosis but is not an authorization credential.
 
 The `ConfigMap` repeats the schema version, semantic revision, and content
-digest in `grid.praxis-proxy.io/*` annotations so Kubernetes tooling can inspect
+digest in `grid.praxis.fast/*` annotations so Kubernetes tooling can inspect
 the contract without decoding the data value.
 
 ### Revision lifecycle

@@ -1,7 +1,7 @@
 {{- include "grid-site.normalize" . }}
 {{- range .Values.inferenceProviders }}
 ---
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: {{ required "inferenceProviders[].name is required" .name }}

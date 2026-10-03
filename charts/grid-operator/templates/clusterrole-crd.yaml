@@ -7,17 +7,17 @@ metadata:
   labels:
     {{- include "grid-operator.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - agenttoolproviders
       - gridnetworks
       - inferenceproviders
     verbs: ["get", "list", "watch", "patch"]
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - gridsites
     verbs: ["get", "list", "watch", "patch", "create", "update"]
-  - apiGroups: ["grid.praxis-proxy.io"]
+  - apiGroups: ["grid.praxis.fast"]
     resources:
       - agenttoolproviders/status
       - gridnetworks/status

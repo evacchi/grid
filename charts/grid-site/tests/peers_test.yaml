@@ -89,7 +89,7 @@ tests:
       peers.hub.digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     asserts:
       - equal:
-          path: metadata.labels["grid.praxis-proxy.io/auto-discover-sites"]
+          path: metadata.labels["grid.praxis.fast/auto-discover-sites"]
           value: "true"
       - equal:
           path: spec.tls
@@ -106,7 +106,7 @@ tests:
       gridNetwork.tls.swimKeyRef: { name: k, namespace: other }
     asserts:
       - notExists:
-          path: metadata.labels["grid.praxis-proxy.io/auto-discover-sites"]
+          path: metadata.labels["grid.praxis.fast/auto-discover-sites"]
       - equal:
           path: spec.tls
           value:
@@ -118,4 +118,4 @@ tests:
       - notExists:
           path: spec.tls
       - notExists:
-          path: metadata.labels["grid.praxis-proxy.io/auto-discover-sites"]
+          path: metadata.labels["grid.praxis.fast/auto-discover-sites"]

@@ -1,9 +1,9 @@
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: grid-combined-site
   labels:
-    grid.praxis-proxy.io/auto-discover-sites: "true"
+    grid.praxis.fast/auto-discover-sites: "true"
 spec:
   gridId: grid-combined-site-v1
   region: east

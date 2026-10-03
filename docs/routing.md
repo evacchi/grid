@@ -129,7 +129,7 @@ Group 3  cross-region providers          <- fallback
 Example:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: local-first
@@ -158,7 +158,7 @@ Use this when the need is:
 `scoreFirst` groups providers by admission state and freshness, regardless of site. Fresh providers admitted for new work can therefore share one group across sites. Scores affect their ordering; locality becomes a tie-breaker rather than a group boundary. Stale or existing-session-only candidates remain in separate groups.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: cross-site-active
@@ -205,7 +205,7 @@ flowchart LR
 Configuration:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: strict-preference
@@ -226,7 +226,7 @@ This is useful for:
 A particularly useful combination for load-sensitive preference is:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: least-pressured-first
@@ -264,7 +264,7 @@ flowchart LR
 Configuration:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: even-local-balancing
@@ -313,7 +313,7 @@ flowchart LR
 Configuration:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: random-provider-grid
@@ -369,7 +369,7 @@ flowchart LR
 GridNetwork:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: weighted-grid
@@ -386,7 +386,7 @@ spec:
 Provider A (partial resource):
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: provider-a
@@ -454,7 +454,7 @@ Use this when the need is:
 > Prefer the provider pool with the shortest normalized queue.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: queue-aware
@@ -505,7 +505,7 @@ Use this when the need is:
 > Prefer the provider pool with more free KV-cache capacity.
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: kv-aware
@@ -724,7 +724,7 @@ must be positive whole seconds (for example, `10s`). This example sets them
 explicitly so the transition behavior is reviewable:
 
 ```yaml
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: GridNetwork
 metadata:
   name: stabilized-admission
@@ -742,7 +742,7 @@ spec:
       minimumStateDuration: 10s
       recoveryHoldDown: 30s
 ---
-apiVersion: grid.praxis-proxy.io/v1alpha1
+apiVersion: grid.praxis.fast/v1alpha1
 kind: InferenceProvider
 metadata:
   name: queue-aware-provider

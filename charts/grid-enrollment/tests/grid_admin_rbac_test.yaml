@@ -13,7 +13,7 @@ tests:
       - equal:
           path: rules
           value:
-            - apiGroups: ["grid.praxis-proxy.io"]
+            - apiGroups: ["grid.praxis.fast"]
               resources: ["enrollmenttokens"]
               verbs: ["create", "delete"]
 

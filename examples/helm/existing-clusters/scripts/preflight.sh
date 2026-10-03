@@ -237,12 +237,12 @@ for SITE in $SITE_NAMES; do
         echo "  SKIP  GridSite label (grid-site chart will create it)"
       else
         GRIDSITE_WITH_LABEL=$(kubectl --context "$CONTEXT" -n grid-system \
-          get gridsite -l "grid.praxis-proxy.io/provider-site" \
+          get gridsite -l "grid.praxis.fast/provider-site" \
           -o name 2>/dev/null || echo "")
         if [[ -n "$GRIDSITE_WITH_LABEL" ]]; then
           echo "  PASS  GridSite has provider-site label"
         else
-          echo "  FAIL  no GridSite with grid.praxis-proxy.io/provider-site label — InferenceProvider siteSelector will not match" >&2
+          echo "  FAIL  no GridSite with grid.praxis.fast/provider-site label — InferenceProvider siteSelector will not match" >&2
           ERRORS=$((ERRORS + 1))
         fi
       fi

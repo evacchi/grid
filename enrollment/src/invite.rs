@@ -19,7 +19,7 @@ const TOKENS_PATH: &str = "/v1alpha1/enrollmenttokens";
 const MANAGED_BY: &str = "grid-enrollment-invite";
 
 /// Invite Secret annotation holding the token id.
-const TOKEN_ID_ANNOTATION: &str = "grid.praxis-proxy.io/token-id";
+const TOKEN_ID_ANNOTATION: &str = "grid.praxis.fast/token-id";
 
 /// Connect retry schedule for one run.
 const BACKOFF: Backoff = Backoff {
@@ -475,12 +475,12 @@ fn invite_secret(name: &str, invite: &EnrollmentTokenRequest, minted: &MintedTok
             name: Some(name.to_owned()),
             labels: Some(pairs(&[
                 ("app.kubernetes.io/managed-by", MANAGED_BY),
-                ("grid.praxis-proxy.io/site", &invite.site_name),
+                ("grid.praxis.fast/site", &invite.site_name),
             ])),
             annotations: Some(pairs(&[
-                ("grid.praxis-proxy.io/grid-network", &invite.grid_network_ref),
+                ("grid.praxis.fast/grid-network", &invite.grid_network_ref),
                 (TOKEN_ID_ANNOTATION, &minted.token_id.to_string()),
-                ("grid.praxis-proxy.io/expires-at", &minted.expires_at),
+                ("grid.praxis.fast/expires-at", &minted.expires_at),
             ])),
             ..ObjectMeta::default()
         },

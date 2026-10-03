@@ -1782,7 +1782,7 @@ fn network_probe_pod(
     })
     .to_string();
     let labels = if allowed {
-        "grid.praxis-proxy.io/quota-client=true"
+        "grid.praxis.fast/quota-client=true"
     } else {
         "qualification=network-policy-negative"
     };

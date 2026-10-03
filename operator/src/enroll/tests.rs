@@ -712,7 +712,7 @@ fn bundles_without_a_certificate_are_refused_before_anything_is_sent() {
 fn target_secrets_must_be_in_the_operator_namespace() {
     let network = |ns: &str| {
         serde_json::from_value::<GridNetwork>(json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridNetwork",
             "metadata": {"name": "grid"},
             "spec": {"tls": {

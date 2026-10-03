@@ -38,7 +38,7 @@ const ENROLL_DEADLINE: Duration = Duration::from_secs(15 * 60);
 const MANAGED_BY: &str = "grid-operator";
 
 /// Label naming the site an invite Secret was minted for.
-const SITE_LABEL: &str = "grid.praxis-proxy.io/site";
+const SITE_LABEL: &str = "grid.praxis.fast/site";
 
 /// Recovery hint for a spent token.
 const SPENT: &str = "A spent token holds the site name until the hub releases it, which is not yet supported. \

@@ -103,7 +103,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              grid.praxis-proxy.io/quota-client: "true"
+              grid.praxis.fast/quota-client: "true"
       ports:
         - protocol: TCP
           port: 6379

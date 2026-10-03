@@ -15,7 +15,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              grid.praxis-proxy.io/backend-access: "provider-gateway"
+              grid.praxis.fast/backend-access: "provider-gateway"
       ports:
         - protocol: TCP
           port: 8000

@@ -398,7 +398,7 @@ async fn ensure_db_serving(
 
 /// Pod template annotation that carries the DB serving certificate's
 /// fingerprint, so a new certificate rolls the Postgres pod.
-const DB_CERT_ANNOTATION: &str = "grid.praxis-proxy.io/db-serving-cert-sha256";
+const DB_CERT_ANNOTATION: &str = "grid.praxis.fast/db-serving-cert-sha256";
 
 /// Roll `deployment` when its pod template does not carry `fingerprint`, the
 /// certificate the DB Secret holds. Checked on every run, so a roll that failed
@@ -739,7 +739,7 @@ mod tests {
             roll_patch("ab12"),
             serde_json::json!({
                 "spec": { "template": { "metadata": { "annotations": {
-                    "grid.praxis-proxy.io/db-serving-cert-sha256": "ab12"
+                    "grid.praxis.fast/db-serving-cert-sha256": "ab12"
                 } } } }
             }),
         );

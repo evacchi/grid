@@ -162,7 +162,7 @@ wait_for_overlay() {
   echo "  Waiting for overlay ConfigMap (up to ${timeout}s)..."
   while (( elapsed < timeout )); do
     if kubectl --context "$context" -n grid-system \
-      get configmap -l grid.praxis-proxy.io/network \
+      get configmap -l grid.praxis.fast/network \
       -o name 2>/dev/null | grep -q configmap; then
       echo "  Overlay ConfigMap found."
       return 0
@@ -181,7 +181,7 @@ render_provider_config() {
 
   local overlay_json
   overlay_json=$(kubectl --context "$context" -n grid-system \
-    get configmap -l grid.praxis-proxy.io/network \
+    get configmap -l grid.praxis.fast/network \
     -o jsonpath='{.items[0].data.routing-config\.json}' 2>/dev/null)
 
   if [[ -z "$overlay_json" ]]; then

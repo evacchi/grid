@@ -57,7 +57,7 @@ Deliver `grid-invite-<siteName>` and the grid CA bundle (`ca.crt` from Secret `g
 Treat invite Secrets as credentials:
 
 - Anyone who can get Secrets in the release namespace can read them, the same users who can read the CA signing key.
-- Removing an entry from `invites` or deleting its Secret does not revoke the token. Revoke it as a grid-admin with `DELETE /v1alpha1/enrollmenttokens/<id>`, using the id in the Secret's `grid.praxis-proxy.io/token-id` annotation. The chart's `<release>-grid-enrollment-grid-admin` Role grants that.
+- Removing an entry from `invites` or deleting its Secret does not revoke the token. Revoke it as a grid-admin with `DELETE /v1alpha1/enrollmenttokens/<id>`, using the id in the Secret's `grid.praxis.fast/token-id` annotation. The chart's `<release>-grid-enrollment-grid-admin` Role grants that.
 - `helm uninstall` leaves invite Secrets behind. Delete them by hand.
 
 ### Enroll on the site
@@ -78,7 +78,7 @@ The GridNetwork's `spec.tls.siteSecretRef` and `caSecretRef` name the Secrets th
 
 - Skips enrollment when the `siteSecretRef` Secret exists, so a restart never spends a token.
 - Pins TLS to `enrollment.caBundle`.
-- Refuses a token Secret whose `grid.praxis-proxy.io/site` label names another site.
+- Refuses a token Secret whose `grid.praxis.fast/site` label names another site.
 - Dry-runs both Secret writes and checks any existing CA Secret before it sends the token, so missing RBAC, an admission refusal, or a different CA fails without spending it.
 - Stores the identity only when the returned CA matches the pinned grid CA and the certificate names the site and carries the operator's key.
 

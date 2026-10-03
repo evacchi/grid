@@ -441,7 +441,7 @@ async fn update_status(
     }
 
     let patch = serde_json::json!({
-        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+        "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "AgentToolProvider",
         "status": status
     });
@@ -579,7 +579,7 @@ mod tests {
 
     fn test_provider(endpoint: &str, grid_network_ref: &str) -> AgentToolProvider {
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "AgentToolProvider",
             "metadata": { "name": "prov" },
             "spec": {
@@ -666,7 +666,7 @@ mod tests {
                             "kind": "Status",
                             "apiVersion": "v1",
                             "status": "Failure",
-                            "message": format!("gridnetworks.grid.praxis-proxy.io \"{name}\" not found"),
+                            "message": format!("gridnetworks.grid.praxis.fast \"{name}\" not found"),
                             "reason": "NotFound",
                             "code": 404,
                         });
@@ -694,7 +694,7 @@ mod tests {
 
     fn test_grid_network(name: &str) -> GridNetwork {
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridNetwork",
             "metadata": { "name": name },
             "spec": {}
@@ -801,7 +801,7 @@ mod tests {
 
     fn test_site(name: &str, network: &str) -> GridSite {
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridSite",
             "metadata": { "name": name },
             "spec": { "gridNetworkRef": network }
@@ -815,7 +815,7 @@ mod tests {
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
             .collect();
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "GridSite",
             "metadata": { "name": name, "labels": labels_map },
             "spec": { "gridNetworkRef": network }
@@ -829,7 +829,7 @@ mod tests {
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
             .collect();
         serde_json::from_value(serde_json::json!({
-            "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+            "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "AgentToolProvider",
             "metadata": { "name": "prov" },
             "spec": {
@@ -1169,7 +1169,7 @@ mod tests {
                     *captured.lock().unwrap_or_else(|_| std::process::abort()) = Some(body.clone());
 
                     let echo = serde_json::json!({
-                        "apiVersion": "grid.praxis-proxy.io/v1alpha1",
+                        "apiVersion": "grid.praxis.fast/v1alpha1",
                         "kind": "AgentToolProvider",
                         "metadata": { "name": name },
                         "spec": { "gridNetworkRef": "net", "endpoint": "http://tools:8080" },

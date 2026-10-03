@@ -157,9 +157,11 @@ AI Grid Network (AGN) is the human-facing project name used in documentation.
 Established software identifiers remain unchanged:
 the Rust package and binary are `operator`, the deployed operator is
 `grid-operator`, the operator chart is `grid-operator`, and the gateway chart is
-`praxis-gateway`. The API group remains `grid.praxis-proxy.io`, with kinds such
-as `GridNetwork` and `GridSite`; existing `grid-*` resource names, `GRID_*`
-environment variables, labels, metrics, and configuration fields are unchanged.
+`praxis-gateway`. The API group is `grid.praxis.fast`, with kinds such as
+`GridNetwork` and `GridSite`. It replaced `grid.praxis-proxy.io`, along with the
+prefix of every Grid label and annotation key, so custom resources created under
+the old group must be recreated. Existing `grid-*` resource names, `GRID_*`
+environment variables, metrics, and configuration fields are unchanged.
 Existing downstream names, including `praxis-ai-grid-operator` where used, are
 also unchanged. Downstream naming alignment is deferred to a separate effort.
 

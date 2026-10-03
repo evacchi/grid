@@ -31,13 +31,13 @@ pub const SCHEMA_VERSION: &str = "1.0.0";
 pub const ENVELOPE_KEY: &str = "routing-overlay.json";
 
 /// `ConfigMap` annotation: schema version.
-pub const ANNOTATION_SCHEMA_VERSION: &str = "grid.praxis-proxy.io/overlay-schema-version";
+pub const ANNOTATION_SCHEMA_VERSION: &str = "grid.praxis.fast/overlay-schema-version";
 
 /// `ConfigMap` annotation: semantic revision.
-pub const ANNOTATION_REVISION: &str = "grid.praxis-proxy.io/overlay-revision";
+pub const ANNOTATION_REVISION: &str = "grid.praxis.fast/overlay-revision";
 
 /// `ConfigMap` annotation: content digest.
-pub const ANNOTATION_CONTENT_DIGEST: &str = "grid.praxis-proxy.io/overlay-content-digest";
+pub const ANNOTATION_CONTENT_DIGEST: &str = "grid.praxis.fast/overlay-content-digest";
 
 // ---------------------------------------------------------------------------
 // Wire types

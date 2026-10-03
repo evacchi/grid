@@ -205,8 +205,8 @@ pub(crate) fn build_consumer_config_map(
 
     let mut labels = BTreeMap::new();
     labels.insert("app.kubernetes.io/managed-by".to_owned(), "grid-operator".to_owned());
-    labels.insert("grid.praxis-proxy.io/gateway".to_owned(), gateway_name.to_owned());
-    labels.insert("grid.praxis-proxy.io/network".to_owned(), network_name.to_owned());
+    labels.insert("grid.praxis.fast/gateway".to_owned(), gateway_name.to_owned());
+    labels.insert("grid.praxis.fast/network".to_owned(), network_name.to_owned());
 
     ConfigMap {
         metadata: kube::api::ObjectMeta {
@@ -1296,11 +1296,11 @@ mod tests {
         let cm = build_consumer_config_map("yaml", "cm-name", "ns", "my-network", "my-gateway");
         let labels = cm.metadata.labels.unwrap();
         assert_eq!(
-            labels.get("grid.praxis-proxy.io/network").map(String::as_str),
+            labels.get("grid.praxis.fast/network").map(String::as_str),
             Some("my-network")
         );
         assert_eq!(
-            labels.get("grid.praxis-proxy.io/gateway").map(String::as_str),
+            labels.get("grid.praxis.fast/gateway").map(String::as_str),
             Some("my-gateway")
         );
     }
