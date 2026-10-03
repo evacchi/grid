@@ -368,6 +368,7 @@ async fn maybe_start_swim(client: &Client, cli: &Cli) -> Result<Option<Arc<swim_
             return Err(format!("GRID_SWIM_BIND_ADDR is not a valid socket address: {e}"));
         },
     };
+    let site_name = swim_site_name(std::env::var("GRID_SWIM_SITE_NAME").ok())?;
     let (advertise_addr, lb_watch) = swim_advertise_addr(client, bind_addr).await?;
     if advertise_addr.unwrap_or(bind_addr).ip().is_unspecified() {
         return Err("refusing to advertise an unspecified SWIM address; set GRID_SWIM_ADVERTISE_ADDR".to_owned());
@@ -391,7 +392,6 @@ async fn maybe_start_swim(client: &Client, cli: &Cli) -> Result<Option<Arc<swim_
         );
     }
     let seeds = seed_resolution.addresses;
-    let site_name = std::env::var("GRID_SWIM_SITE_NAME").unwrap_or_else(|_| hostname_or_default());
     let gateway_address = match gateway::resolve(client, &cli.gateway).await {
         Ok(addr) => addr,
         Err(e) => {
@@ -415,7 +415,7 @@ async fn maybe_start_swim(client: &Client, cli: &Cli) -> Result<Option<Arc<swim_
         (None, Some(watch)) => watch.signals.clone(),
         (None, None) => None,
     };
-    tracing::info!(signals = ?signals_address, "signals endpoint gossiped to peers");
+    tracing::debug!(signals = ?signals_address, "signals endpoint to advertise");
     let cfg = SwimConfig {
         bind_addr,
         advertise_addr,
@@ -935,6 +935,24 @@ fn parse_swim_key(hex: &str) -> Result<swim::crypto::SwimKey, &'static str> {
     Ok(key)
 }
 
+/// The SWIM site name, `configured` or else the hostname, refused unless it is a DNS label.
+///
+/// The name keys the revision-lease `ConfigMap` and the `GridSite`, so an empty or
+/// invalid one would leave SWIM off rather than fail.
+///
+/// # Errors
+///
+/// Returns the reason when the name is not a lowercase DNS label.
+fn swim_site_name(configured: Option<String>) -> Result<String, String> {
+    let name = configured.unwrap_or_else(hostname_or_default);
+    certs::validate_site_name(&name).map_err(|_invalid| {
+        format!(
+            "SWIM site name {name:?} is not a lowercase DNS label; set GRID_SWIM_SITE_NAME (swim.siteName or site.name)"
+        )
+    })?;
+    Ok(name)
+}
+
 /// Return the machine hostname or a safe fallback.
 fn hostname_or_default() -> String {
     std::fs::read_to_string("/etc/hostname")
@@ -1241,7 +1259,9 @@ async fn run_signals_server(
         return Ok(());
     };
     // Peers learn this listener from the advertised address, so it waits for SWIM to settle.
-    drop(swim_settled(swim).await);
+    let advertised = swim_settled(swim)
+        .await
+        .and_then(|handle| handle.signals_address().map(str::to_owned));
     let app = axum::Router::new()
         .route(operator::signals::SIGNALS_PATH, axum::routing::get(signals_handler))
         .with_state(listener.published.clone());
@@ -1255,7 +1275,7 @@ async fn run_signals_server(
         reason = "serves for the process lifetime alongside the controllers"
     )]
     loop {
-        if let Err(error) = listener.serve_once(&app).await {
+        if let Err(error) = listener.serve_once(&app, advertised.as_deref()).await {
             tracing::error!(%error, bind = ?listener.bind, "signals listener error; retrying");
             tokio::time::sleep(SIGNALS_TLS_POLL).await;
         }
@@ -1264,7 +1284,11 @@ async fn run_signals_server(
 
 impl SignalsListener {
     /// Serve until this site's TLS material changes, or wait while it is unavailable.
-    async fn serve_once(&self, app: &axum::Router) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn serve_once(
+        &self,
+        app: &axum::Router,
+        advertised: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (tls, own) = Box::pin(signals_identity(&self.client)).await;
         let Some(tls) = tls else {
             tracing::warn!("signals: TLS material unavailable; not serving the rollup (fail closed)");
@@ -1280,7 +1304,7 @@ impl SignalsListener {
         let bound = listener
             .local_addr()
             .map_or_else(|_| "unknown".to_owned(), |a| a.to_string());
-        tracing::info!(addr = %bound, tls = true, "signals server started");
+        tracing::info!(addr = %bound, advertised = ?advertised, tls = true, "signals server serving; peers poll the advertised endpoint");
         let admission = Admission::new(self.max_per_peer);
         let changed = material_changed(self.client.clone(), own);
         let serving = Serving {
@@ -2353,6 +2377,14 @@ async fn peer_tls(client: &Client) -> Option<Arc<operator::signals::PeerTlsMater
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_swim_site_name_must_be_a_dns_label() {
+        for bad in ["", " ", "East", "east_1", "-east"] {
+            assert!(swim_site_name(Some(bad.to_owned())).is_err(), "{bad:?} is refused");
+        }
+        assert_eq!(swim_site_name(Some("east-1".to_owned())), Ok("east-1".to_owned()));
+    }
 
     /// A caller is scoped from its certificate, and nothing is trusted for
     /// presenting nothing: only this site's own certificate earns `Local`, and
