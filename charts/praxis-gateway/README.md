@@ -398,10 +398,10 @@ Known limits:
   provider gateway is down. That request fails rather than failing over.
 - The gateway matches a candidate's cluster to `gatewayConfig.backends` by name only.
   Nothing checks that the backend serves the candidate's site.
-- Site certificates last 30 days and nothing renews them. The gateway reads its
-  client certificate and the signals pollers read theirs once, at start, and a
-  `pin` digest changes on renewal. After re-enrolling, update the digests and
-  restart the gateways.
+- Site certificates last 180 days. Under `spiffe` trust the operator rotates them
+  around day 120 and rolls the gateway Deployment, because the gateway reads its
+  upstream client certificate only at start. Under `pin` trust nothing rotates
+  them: re-enroll each site and update the peers' digests before it expires.
 
 ### Routing overlay delivery
 

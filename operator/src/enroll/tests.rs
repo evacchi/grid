@@ -348,7 +348,7 @@ async fn a_spent_token_fails_once_with_the_recovery() {
     let store = FakeStore::invited();
     let outcome = run_flow(&store, &settings).await;
     assert!(
-        matches!(&outcome, Err(e @ EnrollError::TokenRejected(_)) if e.to_string().contains("new site name")),
+        matches!(&outcome, Err(e @ EnrollError::TokenRejected(_)) if e.to_string().contains("mint a new invite")),
         "a spent token is a hard error naming the fix: {outcome:?}"
     );
     assert_eq!(mock.calls(), 1, "a rejected token is not retried");
@@ -471,7 +471,7 @@ async fn persistent_write_failures_end_in_not_stored() {
     };
     let outcome = run_flow(&store, &settings).await;
     assert!(
-        matches!(&outcome, Err(e @ EnrollError::NotStored(_)) if e.to_string().contains("new site name")),
+        matches!(&outcome, Err(e @ EnrollError::NotStored(_)) if e.to_string().contains("mint a new invite")),
         "writes retry to the budget, then say the token is spent: {outcome:?}"
     );
 }
@@ -674,6 +674,7 @@ fn urls_must_parse_and_be_https() {
         token_secret_key: "token".to_owned(),
         identity_secret: "grid-site-identity".to_owned(),
         ca_secret: "grid-ca".to_owned(),
+        renew: false,
     };
     for (url, want) in [("http://enroll.example.com", "https"), ("not a url", "GRID_ENROLL_URL")] {
         let got = Settings::from_config(&config(url))
@@ -716,6 +717,7 @@ fn bundles_without_a_certificate_are_refused_before_anything_is_sent() {
         token_secret_key: "token".to_owned(),
         identity_secret: "grid-site-identity".to_owned(),
         ca_secret: "grid-ca".to_owned(),
+        renew: false,
     };
     assert!(Settings::from_config(&with(&ca, None)).is_ok(), "a PEM CA is accepted");
     for (config, name) in [

@@ -353,6 +353,7 @@ mod live {
             authorizer: Authorizer::Local(GridAdmins::from_table("admin: good-admin\n")),
             cert_lifetime: certs::DEFAULT_SITE_CERT_LIFETIME,
             reserved_sites: Vec::new(),
+            renewals_enabled: true,
         });
         listen_after(port, after, serving, router(Arc::clone(&state))).await;
         (state, minter, admin)

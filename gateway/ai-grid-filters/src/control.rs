@@ -455,7 +455,7 @@ fn renew_identity(control: &Mutex<Control>, tally: &WatchCounts) {
     let result = control.apply_with(&config, identity);
     drop(control);
     if !matches!(result, Ok(None)) {
-        report(&result, tally, "grid: identity renewed; peer pollers restarted");
+        report(&result, tally, "grid: identity rotated; peer pollers restarted");
     }
 }
 

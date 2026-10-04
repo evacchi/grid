@@ -933,6 +933,8 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "tokio",
+ "tokio-openssl",
+ "tokio-rustls",
  "tower",
  "tracing",
  "tracing-subscriber",

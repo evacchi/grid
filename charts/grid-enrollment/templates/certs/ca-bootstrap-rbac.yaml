@@ -59,6 +59,15 @@ rules:
       - {{ include "grid-enrollment.adminTokensSecret" . | quote }}
       {{- end }}
     verbs: ["get", "update"]
+  {{- if .Values.hubSite.name }}
+  # The CA-signed seed registering the hub's key, applied server side. Secret create is
+  # granted above; get and patch reach only this Secret.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ .Values.hubSite.seedSecretName | quote }}
+    verbs: ["get", "patch"]
+  {{- end }}
   {{- if and .Values.hubSite.name .Values.hubSite.swimKeySecretName }}
   # The SWIM key is created once and only read back, never replaced.
   - apiGroups: [""]
@@ -135,6 +144,13 @@ rules:
       - {{ $.Values.hubSite.identitySecretName | quote }}
       - {{ $.Values.hubSite.caSecretName | quote }}
     verbs: ["get", "update"]
+  # Replacing an operator's placeholder identity changes its type, which only delete
+  # and create can do.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ $.Values.hubSite.identitySecretName | quote }}
+    verbs: ["delete"]
   {{- with $.Values.hubSite.swimKeySecretName }}
   - apiGroups: [""]
     resources: ["secrets"]

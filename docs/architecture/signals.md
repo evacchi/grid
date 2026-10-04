@@ -30,8 +30,10 @@ unaffected. The mode is read once at operator start, so changing it is a
 restart, not a live flip, which keeps the mTLS listener bound only under `poll`.
 When a `GridNetwork` declares another mode than the running one, for example
 one created after the operator started, the operator exits so Kubernetes
-restarts it into the declared mode. Only the poll path reads peer trust, so a
-trust change under `gossip` does not restart it.
+restarts it into the declared mode. Only the poll path restarts on a peer trust
+change, so a trust change under `gossip` does not restart it. Certificate rotation
+reads the declared trust on every check, so under `gossip` a switch to `pin` stops
+it without a restart. Under `poll` the same change restarts the operator.
 
 At Tech Preview one operator serves one `GridNetwork`, and it fails to start on
 more than one rather than pick a mode for the process-global serve and poll

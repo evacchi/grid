@@ -99,6 +99,21 @@ annotation, which `crds.keep` set at that time.
 - The signals listener binds `[::]:9091`, or `0.0.0.0:9091` without IPv6.
 - Unparseable `GRID_SIGNALS_*` settings fail at startup.
 
+### Metrics over TLS
+
+This chart version has no upgrade path from earlier ones; reinstall it. What changes:
+
+- `metrics.tls.enabled: auto` serves `/metrics`, `/healthz`, and `/readyz` over HTTPS on
+  OpenShift (service CA) and on any grid site (`grid.id` or `enrollment.enabled`, site
+  identity). A scrape that still uses `http` fails. The chart's ServiceMonitor follows;
+  update a hand-written one, or set `metrics.tls.enabled: false`.
+- On OpenShift, `networkPolicy.enabled: auto` admits only the monitoring namespaces in
+  `networkPolicy.metricsFrom` to the metrics and health port. Outside OpenShift no
+  NetworkPolicy is rendered, so the port has no authentication; restrict it yourself or set
+  `networkPolicy.enabled: true`.
+- Under `siteIdentity` the port listens only after enrollment writes the identity, so the
+  scrape target is down until then. Do not alert on it during enrollment.
+
 ### Gateway namespace
 
 The operator looks for the gateway Service in the release namespace unless
@@ -142,6 +157,7 @@ RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders grid
 | `crds.enabled` | bool | `true` | Install and upgrade the Grid CRDs. `false` when a platform owns them. |
 | `crds.keep` | bool | `true` | Keep the CRDs on `helm uninstall` and an Argo CD delete or prune. |
 | `rbac.enrollmentNamespace` | string | `""` | The grid-enrollment namespace. The render fails if the operator would get Secret access there. |
+| `rbac.metricsScraper` | bool | `true` | Create the metrics scraper ServiceAccount, allowed only GET on the nonResourceURL /metrics, and let the operator mint short-lived tokens for it. An llm-d EPP serving bearer-authenticated metrics (the default) admits a scrape with that token (metricsConfig.auth type serviceAccountToken). The operator never sends its own token. |
 | `replicaCount` | int | `1` | Operator replicas. Must be 1 (schema-enforced). |
 | `image.repository` | string | `ghcr.io/praxis-proxy/grid-operator` | Image repository. |
 | `image.tag` | string | `""` | Image tag. Defaults to chart appVersion. |
@@ -164,6 +180,10 @@ RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders grid
 | `metrics.service.enabled` | bool | `true` | Create a metrics ClusterIP Service. |
 | `metrics.service.port` | int | `9090` | Metrics Service port. |
 | `metrics.service.annotations` | object | `{}` | Metrics Service annotations. |
+| `metrics.tls.enabled` | bool or `auto` | `auto` | Serve `/metrics`, `/healthz`, and `/readyz` over TLS from `metrics.tls.source`. `false` serves plaintext. The probes switch to HTTPS, and the certificate reloads when it rotates. |
+| `metrics.tls.source` | string | `auto` | `serviceCA`, `siteIdentity`, or `existingSecret`. `auto` picks `existingSecret` when set, else `serviceCA` on OpenShift, else `siteIdentity` when `grid.id` or `enrollment.enabled` is set. So every grid site serves HTTPS, and only an install with no grid identity serves plaintext. `siteIdentity` serves the enrolled `grid-site-identity` (`enrollment.identitySecretName`), read once enrollment writes it, so the port listens only after enrollment. An offline render without `--api-versions security.openshift.io/v1` picks `siteIdentity` rather than `serviceCA`. |
+| `metrics.tls.existingSecret` | string | `""` | Secret holding `tls.crt` and `tls.key` for source `existingSecret`. For `serviceCA`, the metrics Service asks the OpenShift service CA for `<fullname>-metrics-tls`. |
+| `metrics.tls.mountPath` | string | `/etc/grid/metrics-tls` | Mount path for the certificate and key. |
 | `swim.bindAddress` | string | `0.0.0.0:7946` | SWIM protocol bind address. |
 | `swim.advertiseAddress` | string | `""` | Externally reachable SWIM address. Defaults to the SWIM Service LoadBalancer address, else Pod IP. |
 | `swim.requireKey` | bool | `true` | Hold SWIM traffic until the GridNetwork key loads or the network declares none. |
@@ -186,13 +206,18 @@ RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders grid
 | `gateway.port` | string | `""` | Provider gateway Service port advertised to remote sites. Empty uses 8080. Maps to `GRID_GATEWAY_PORT`. |
 | `health.liveness.initialDelaySeconds` | int | `5` | Liveness probe initial delay. |
 | `health.liveness.periodSeconds` | int | `10` | Liveness probe period. |
+| `health.startup.periodSeconds` | int | `10` | Startup probe period, for `metrics.tls.source` `siteIdentity`. |
+| `health.startup.failureThreshold` | int | `96` | Startup probe failures before a restart. The window outlasts the 15-minute enrollment deadline, so a restart never interrupts enrollment. |
 | `health.readiness.initialDelaySeconds` | int | `5` | Readiness probe initial delay. |
 | `health.readiness.periodSeconds` | int | `10` | Readiness probe period. |
 | `serviceMonitor.enabled` | bool | `false` | Create a Prometheus ServiceMonitor. |
 | `serviceMonitor.labels` | object | `{}` | Additional ServiceMonitor labels. |
 | `serviceMonitor.namespace` | string | `""` | ServiceMonitor namespace override. |
-| `serviceMonitor.interval` | string | `""` | Prometheus scrape interval. |
-| `serviceMonitor.scrapeTimeout` | string | `""` | Prometheus scrape timeout. |
+| `serviceMonitor.interval` | string | `30s` | Prometheus scrape interval. Empty leaves the Prometheus default. |
+| `serviceMonitor.scrapeTimeout` | string | `10s` | Prometheus scrape timeout. Empty leaves the Prometheus default. |
+| `networkPolicy.enabled` | bool or `auto` | `auto` | Render a NetworkPolicy for the operator pod. `auto` turns it on where OpenShift runs. SWIM and signals stay open to every peer. |
+| `networkPolicy.metricsFrom` | list | the OpenShift user-workload and platform monitoring namespaces | NetworkPolicyPeer entries allowed to reach the metrics and health port. Kubelet probes are unaffected on OpenShift. Must not be empty. |
+| `serviceMonitor.tlsConfig` | object | `{}` | Scrape TLS settings when `metrics.tls` is on. Empty: the OpenShift service CA and the Service DNS name for `serviceCA`, or the grid CA Secret and `<site>.grid.internal` for `siteIdentity`. Required with `existingSecret`. |
 | `resources` | object | `{}` | Container resource requests and limits. |
 | `nodeSelector` | object | `{}` | Node selector for scheduling. |
 | `affinity` | object | `{}` | Pod affinity rules. |
@@ -207,6 +232,7 @@ RELEASE=grid-operator; NAMESPACE=grid-system; for crd in agenttoolproviders grid
 | `enrollment.tokenSecretRef` | object | `{name: "", key: token}` | Secret in the release namespace holding the one-time site token. |
 | `enrollment.identitySecretName` | string | `grid-site-identity` | Secret the site identity is written to when no `GridNetwork` names one. Installing the operator alone enrolls the site; no `GridNetwork` is needed. |
 | `enrollment.caSecretName` | string | `grid-ca` | Secret the grid CA is written to when no `GridNetwork` names one. |
+| `enrollment.rotation.enabled` | bool | `true` | Rotate the site identity before it expires, presenting the current one. Off under `pin` peer trust whatever this says. Needs an enrollment URL: the default with `enrollment.enabled`, or `enrollment.url` set, as on a hub whose identity bootstrap issued. |
 
 ## Join a grid
 
@@ -224,10 +250,15 @@ the site identity, the grid CA, and `grid.swimKeySecretName`, plus this site's G
 and `grid.signals: poll` serves signals on the SWIM Service. The CRs need the grid CRDs
 first. Argo CD applies them a sync wave after the CRDs. Plain Helm cannot map them on the
 first install, so set `grid.id` on an upgrade after it, or install the grid-site chart.
+`grid.signals` and `grid.peerTrust` also set the modes the operator starts in before any
+GridNetwork exists, with or without `grid.id`. Set them to match the grid's GridNetwork,
+wherever it comes from, and the operator never restarts when that network appears.
 
 ## Auto-enroll
 
 With `enrollment.enabled`, the operator enrolls on startup when the site identity Secret is absent, and reports ready after it enrolls. No `GridNetwork` is needed: the token pins the grid. The operator writes to the Secrets a `GridNetwork`'s `spec.tls.siteSecretRef` and `caSecretRef` name when one exists, and otherwise to `enrollment.identitySecretName` and `enrollment.caSecretName`. Both must be in the release namespace. With `rbac.create=false`, grant the operator get, create, and patch on Secrets. [Site Enrollment](../../docs/installation/enrollment.md#enroll-a-site) covers the hub and site steps.
+
+With `enrollment.rotation.enabled`, the default, the operator rotates the site identity when less than a third of its lifetime remains. It presents the current certificate to the enrollment service, writes the new certificate and key into the same Secret, and keeps the replaced certificate under `previous.crt` until it expires. Consumers reload the Secret without a restart. The gateway loads its upstream client certificate only at start, so after each rotation the operator rolls the gateway Deployment named by `gateway.serviceName`, setting the pod template annotation `grid.praxis.fast/site-identity-fingerprint` to the new leaf's fingerprint. Rotation pins the enrollment service to `enrollment.caBundle` when set, and otherwise to the grid CA the site already holds. An identity that expired cannot rotate: `GridNetwork` `status.identity` reports `IdentityExpired`, and the site re-enrolls. The operator rotates only under `spiffe` peer trust, and follows the trust its `GridNetwork` declares. Before a `GridNetwork` exists it trusts by SPIFFE ID and rotates. Under `pin`, which a `GridNetwork` gets when it omits `peerTrust`, it logs `rotation disabled` when it finds pin trust, leaves `status.identity.rotateAfter` empty, and the site re-enrolls and is re-pinned before `status.identity.notAfter`. Setting `enrollment.rotation.enabled=false` stops this site's rotation and gateway roll and keeps its current identity until it expires. [Turn rotation off](../../docs/installation/enrollment.md#turn-rotation-off) covers turning it off for the whole grid.
 
 ## RBAC and namespace access
 

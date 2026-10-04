@@ -119,6 +119,8 @@ spec:
             - "{{ $.Values.hubSite.identitySecretName }}"
             - "--site-ca-secret"
             - "{{ $.Values.hubSite.caSecretName }}"
+            - "--reserved-seeds-secret"
+            - "{{ $.Values.hubSite.seedSecretName }}"
             {{- with $.Values.hubSite.swimKeySecretName }}
             - "--swim-key-secret"
             - "{{ . }}"

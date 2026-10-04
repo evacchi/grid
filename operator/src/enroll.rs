@@ -41,8 +41,7 @@ const MANAGED_BY: &str = "grid-operator";
 const SITE_LABEL: &str = "grid.praxis.fast/site";
 
 /// Recovery hint for a spent token.
-const SPENT: &str = "A spent token holds the site name until the hub releases it, which is not yet supported. \
-                     Reinstall the hub or enroll under a new site name.";
+const SPENT: &str = "Delete the site's enrollment on the hub, then mint a new invite.";
 
 /// Auto-enroll configuration.
 #[derive(Args, Debug, Clone)]
@@ -92,6 +91,10 @@ pub struct Config {
     /// Secret the grid CA is written to, unless the `GridNetwork` names one.
     #[arg(long = "enroll-ca-secret", env = "GRID_ENROLL_CA_SECRET", default_value = "grid-ca")]
     pub ca_secret: String,
+
+    /// Renew the site identity through the enrollment service before it expires.
+    #[arg(long = "rotate", env = "GRID_ROTATION_ENABLED")]
+    pub renew: bool,
 }
 
 /// Why enrollment did not complete.
@@ -879,6 +882,8 @@ pub async fn ensure_enrolled(client: &Client, config: &Config) -> Result<(), Enr
         .await
         .map_err(|_elapsed| EnrollError::TimedOut(ENROLL_DEADLINE.as_secs()))?
 }
+
+pub mod renew;
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]

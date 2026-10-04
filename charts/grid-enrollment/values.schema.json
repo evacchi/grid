@@ -221,6 +221,44 @@
           },
           "additionalProperties": false
         },
+        "enrollmentAdmins": {
+          "type": "object",
+          "properties": {
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "User",
+                      "Group",
+                      "ServiceAccount"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "not": {
+                      "pattern": "^system:(masters|authenticated|unauthenticated|serviceaccounts)(:.*)?$"
+                    }
+                  },
+                  "namespace": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "tokenAudience": {
           "type": "string",
           "minLength": 1,
@@ -241,12 +279,21 @@
         "replicaCount": {
           "type": "integer"
         },
+        "rotation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
         "certLifetimeSecs": {
           "type": [
             "string",
             "integer"
           ],
-          "description": "Leaf lifetime in seconds. Empty keeps the service default."
+          "description": "Leaf lifetime in seconds. Empty keeps the service default, 180 days."
         },
         "gridAdminTokens": {
           "type": "object",
@@ -506,6 +553,11 @@
         "swimKeySecretName": {
           "description": "Secret for the grid's SWIM key, created once in the release and hub namespaces. Empty skips it.",
           "type": "string"
+        },
+        "seedSecretName": {
+          "description": "Secret for the CA-signed seed that registers the hub's key so it can rotate.",
+          "type": "string",
+          "minLength": 1
         }
       }
     },
