@@ -1,7 +1,7 @@
 name: Triggered Integration Test
 
 # ------------------------------------------------------------------------------
-# Maintainer-triggered integration test of a Grid pull request or main branch.
+# Maintainer-triggered integration test of Grid main, a pull request, or a branch.
 #
 # Runs the GLB demo against the tested revision to verify multi-cluster
 # routing, SWIM discovery, mTLS, overlay hot-reload, and provider selection
@@ -12,7 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Grid pull-request number; leave blank to test main
+        description: Grid pull-request number; mutually exclusive with branch
+        required: false
+        default: ""
+        type: string
+      branch:
+        description: Branch in this repository to test; leave blank for a PR or main
         required: false
         default: ""
         type: string
@@ -26,7 +31,7 @@ on:
           - full
 
 concurrency:
-  group: grid-triggered-integration-${{ inputs.pr_number || 'main' }}-${{ inputs.mode }}
+  group: grid-triggered-integration-${{ inputs.pr_number != '' && format('pr-{0}', inputs.pr_number) || inputs.branch != '' && format('branch-{0}', inputs.branch) || 'main' }}-${{ inputs.mode }}
   cancel-in-progress: true
 
 permissions: {}
@@ -76,6 +81,7 @@ jobs:
       source_label: ${{ steps.source.outputs.source_label }}
       tested_sha: ${{ steps.source.outputs.tested_sha }}
       checkout_sha: ${{ steps.source.outputs.checkout_sha }}
+      branch_name: ${{ steps.source.outputs.branch_name }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
       title: ${{ steps.pr.outputs.title }}
       url: ${{ steps.pr.outputs.url }}
@@ -86,15 +92,26 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       base_sha: ${{ steps.source.outputs.base_sha }}
     steps:
-      - name: Validate PR number
-        if: inputs.pr_number != ''
+      - name: Validate source selector
         env:
           PR_NUM: ${{ inputs.pr_number }}
+          BRANCH_NAME: ${{ inputs.branch }}
         run: |
           set -euo pipefail
-          if ! [[ "${PR_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+          if [[ -n "${PR_NUM}" && -n "${BRANCH_NAME}" ]]; then
+            echo "::error::Choose either pr_number or branch, not both"
+            exit 1
+          fi
+          if [[ -n "${PR_NUM}" ]] && ! [[ "${PR_NUM}" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::pr_number must be a positive decimal integer, got: '${PR_NUM}'"
             exit 1
+          fi
+          if [[ -n "${BRANCH_NAME}" ]]; then
+            if ! [[ "${BRANCH_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
+              || ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null; then
+              echo "::error::branch must be a valid simple branch name in this repository"
+              exit 1
+            fi
           fi
 
       - name: Query PR metadata
@@ -166,6 +183,7 @@ jobs:
         id: source
         env:
           PR_NUM: ${{ inputs.pr_number }}
+          BRANCH_NAME: ${{ inputs.branch }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
@@ -216,6 +234,21 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
             echo "Resolved refs/heads/main -> ${BASE_SHA} (base)"
             echo "Constructed deterministic merge of PR #${PR_NUM} head ${HEAD_SHA} onto ${BASE_SHA} -> ${MERGE_SHA}"
+          elif [[ -n "${BRANCH_NAME}" ]]; then
+            BRANCH_REF="refs/heads/${BRANCH_NAME}"
+            BRANCH_SHA=$(git ls-remote "${REPO_URL}" "${BRANCH_REF}" | awk -v ref="${BRANCH_REF}" '$2 == ref {print $1}')
+            if [[ -z "${BRANCH_SHA}" ]]; then
+              echo "::error::Cannot resolve ${BRANCH_REF} in ${REPO_URL}"
+              exit 1
+            fi
+            {
+              echo "source_kind=branch"
+              echo "source_label=branch/${BRANCH_NAME}"
+              echo "branch_name=${BRANCH_NAME}"
+              echo "tested_sha=${BRANCH_SHA}"
+              echo "checkout_sha=${BRANCH_SHA}"
+            } >> "${GITHUB_OUTPUT}"
+            echo "Resolved ${BRANCH_REF} -> ${BRANCH_SHA}"
           else
             MAIN_SHA=$(git ls-remote "${REPO_URL}" refs/heads/main | awk '{print $1}')
             if [[ -z "${MAIN_SHA}" ]]; then
@@ -232,7 +265,7 @@ jobs:
           fi
 
       - name: Write main metadata
-        if: inputs.pr_number == ''
+        if: inputs.pr_number == '' && inputs.branch == ''
         run: |
           set -euo pipefail
           jq -n \
@@ -241,6 +274,23 @@ jobs:
             --arg branch "main" \
             --arg sha "${{ steps.source.outputs.tested_sha }}" \
             '{source: $source, repository: $repository, branch: $branch, sha: $sha}' \
+            > source-metadata.json
+          echo "::group::Source metadata"
+          cat source-metadata.json
+          echo "::endgroup::"
+
+      - name: Write branch metadata
+        if: inputs.branch != ''
+        env:
+          BRANCH_NAME: ${{ inputs.branch }}
+          BRANCH_SHA: ${{ steps.source.outputs.tested_sha }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "${{ github.repository }}" \
+            --arg branch "${BRANCH_NAME}" \
+            --arg sha "${BRANCH_SHA}" \
+            '{source: "branch", repository: $repository, branch: $branch, sha: $sha}' \
             > source-metadata.json
           echo "::group::Source metadata"
           cat source-metadata.json
@@ -272,6 +322,7 @@ jobs:
       PR_NUMBER: ${{ needs.resolve-source.outputs.pr_number }}
       HEAD_SHA: ${{ needs.resolve-source.outputs.head_sha }}
       BASE_SHA: ${{ needs.resolve-source.outputs.base_sha }}
+      BRANCH_NAME: ${{ needs.resolve-source.outputs.branch_name }}
       MODE: ${{ inputs.mode || 'quick' }}
     steps:
       # ----------------------------------------------------------------------
@@ -372,25 +423,32 @@ jobs:
           fi
           echo "::notice::PASS: testing main at ${ACTUAL}"
 
-      - name: Checkout demos
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: praxis-proxy/demos
-          ref: main
-          path: praxis-demos
-          persist-credentials: false
-
-      - name: Record demos SHA
-        id: demos
-        run: |
-          DEMOS_SHA=$(git -C "${GITHUB_WORKSPACE}/praxis-demos" rev-parse HEAD)
-          echo "sha=${DEMOS_SHA}" >> "${GITHUB_OUTPUT}"
-          echo "Demos repo SHA: ${DEMOS_SHA}"
-
-      - name: Allow the GLB test's private backend endpoints
+      - name: Verify branch checkout
+        if: needs.resolve-source.outputs.source_kind == 'branch'
         run: |
           set -euo pipefail
-          DEMO_DIR="${GITHUB_WORKSPACE}/praxis-demos/demos/grid-glb-demo"
+          ACTUAL=$(git -C "${GITHUB_WORKSPACE}/grid" rev-parse HEAD)
+
+          echo "::group::Verified Grid branch checkout"
+          echo "Repository:       ${{ github.repository }}"
+          echo "Requested branch: ${BRANCH_NAME}"
+          echo "Expected SHA:     ${TESTED_SHA}"
+          echo "Checked-out HEAD: ${ACTUAL}"
+          git -C "${GITHUB_WORKSPACE}/grid" status --short --branch
+          git -C "${GITHUB_WORKSPACE}/grid" log -1 --format='Commit: %H%nSubject: %s'
+          echo "::endgroup::"
+
+          if [[ "${ACTUAL}" != "${TESTED_SHA}" ]]; then
+            echo "::error::Branch SHA changed between resolve and checkout"
+            echo "::error::Expected ${TESTED_SHA}, got ${ACTUAL}"
+            exit 1
+          fi
+          echo "::notice::PASS: testing ${BRANCH_NAME} at ${ACTUAL}"
+
+      - name: Validate private backend settings in the checked-in GLB topology
+        run: |
+          set -euo pipefail
+          DEMO_DIR="${GITHUB_WORKSPACE}/grid/tests/e2e/topologies/grid-glb-demo"
           for provider in east-provider west-provider; do
             config="${DEMO_DIR}/configs/${provider}/praxis.yaml"
             if [[ ! -f "${config}" ]]; then
@@ -398,21 +456,12 @@ jobs:
               exit 1
             fi
 
-            if grep -q '^insecure_options:' "${config}"; then
-              if ! grep -Eq '^  allow_private_endpoints:[[:space:]]*true[[:space:]]*(#.*)?$' "${config}" \
-                || ! grep -Eq '^  allow_private_upstreams:[[:space:]]*true[[:space:]]*(#.*)?$' "${config}"; then
-                echo "::error::${config} has an unexpected insecure_options block; refusing to rewrite it"
-                exit 1
-              fi
-            else
-              tmp_config="$(mktemp "${config}.XXXXXX")"
-              {
-                printf 'insecure_options:\n  allow_private_endpoints: true\n  allow_private_upstreams: true\n\n'
-                cat "${config}"
-              } > "${tmp_config}"
-              mv "${tmp_config}" "${config}"
+            if ! grep -Eq '^  allow_private_endpoints:[[:space:]]*true[[:space:]]*(#.*)?$' "${config}" \
+              || ! grep -Eq '^  allow_private_upstreams:[[:space:]]*true[[:space:]]*(#.*)?$' "${config}"; then
+              echo "::error::${config} must explicitly allow the private Kind endpoint and upstream addresses"
+              exit 1
             fi
-            echo "Prepared private Kind backend allowances in configs/${provider}/praxis.yaml"
+            echo "Validated private Kind backend allowances in configs/${provider}/praxis.yaml"
           done
 
       - name: Validate immutable gateway input
@@ -515,6 +564,9 @@ jobs:
           if [[ "${SOURCE_KIND}" == "pr" ]]; then
             TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
             ARTIFACT_PREFIX="grid-pr-${PR_NUMBER}-${SHORT_SHA}"
+          elif [[ "${SOURCE_KIND}" == "branch" ]]; then
+            TAG="branch-${SHORT_SHA}"
+            ARTIFACT_PREFIX="grid-branch-${SHORT_SHA}"
           else
             TAG="main-${SHORT_SHA}"
             ARTIFACT_PREFIX="grid-main-${SHORT_SHA}"
@@ -732,6 +784,8 @@ jobs:
           fi
           if [[ "${SOURCE_KIND}" == "pr" ]]; then
             echo "::notice::Demo will build xtask/forge from PR merge ${GRID_ACTUAL}, not main/base ${BASE_SHA}"
+          elif [[ "${SOURCE_KIND}" == "branch" ]]; then
+            echo "::notice::Demo will build xtask/forge from ${BRANCH_NAME} at ${GRID_ACTUAL}"
           else
             echo "::notice::Demo will build xtask/forge from main at ${GRID_ACTUAL}"
           fi
@@ -739,8 +793,10 @@ jobs:
           echo "Operator image: ${GRID_XTASK_OPERATOR_IMAGE} (revision ${TESTED_SHA})"
           echo "Mock image:     ${GRID_XTASK_MOCK_PROVIDER_IMAGE} (revision ${TESTED_SHA})"
           echo "Gateway image:  ${GRID_XTASK_GATEWAY_IMAGE}@${GATEWAY_IMAGE_DIGEST}"
-          cd "${GITHUB_WORKSPACE}/praxis-demos/demos/grid-glb-demo"
-          ./run.sh "--${MODE}" --teardown --keep-on-failure \
+          cd "${GRID_REPO}"
+          cargo xtask env run-grid-glb-demo \
+            --forge-config tests/e2e/topologies/grid-glb-demo/forge.yaml \
+            "--${MODE}" --teardown --keep-on-failure \
             --evidence-dir "${GITHUB_WORKSPACE}/evidence/glb" \
             2>&1 | tee "${GITHUB_WORKSPACE}/run-glb.log"
           echo "result=success" >> "${GITHUB_OUTPUT}"
@@ -831,7 +887,7 @@ jobs:
           docker ps -a > "${DIAG}/docker-containers.txt" 2>&1 || true
           echo "::endgroup::"
 
-          DEMO_DIR="${GITHUB_WORKSPACE}/praxis-demos/demos/grid-glb-demo"
+          DEMO_DIR="${GITHUB_WORKSPACE}/grid/tests/e2e/topologies/grid-glb-demo"
           if [[ -d "${DEMO_DIR}/.forge" ]]; then
             cp -r "${DEMO_DIR}/.forge" "${DIAG}/forge-output" 2>/dev/null || true
             find "${DIAG}/forge-output" \
@@ -940,7 +996,6 @@ jobs:
         env:
           TAG: ${{ steps.tags.outputs.tag || 'unknown' }}
           ARTIFACT_PREFIX: ${{ steps.tags.outputs.artifact_prefix || 'grid-unknown' }}
-          DEMOS_SHA: ${{ steps.demos.outputs.sha || 'unknown' }}
           GLB_RESULT: ${{ steps.glb.outputs.result || 'not-reached' }}
           CLEANUP_RESULT: ${{ steps.cleanup.outputs.result || 'unknown' }}
           RESOLVED_DIGEST: ${{ steps.gateway.outputs.digest || 'unknown' }}
@@ -971,11 +1026,14 @@ jobs:
               echo "| **Head SHA** | \`${HEAD_SHA}\` |"
               echo "| **Base SHA** | \`${BASE_SHA}\` |"
               echo "| **Source verification** | PR merge verified; not base/main |"
+            elif [[ "${SOURCE_KIND}" == "branch" ]]; then
+              echo "| **Branch** | \`${BRANCH_NAME}\` |"
+              echo "| **Source verification** | Branch SHA verified |"
             else
               echo "| **Source verification** | Main SHA verified |"
             fi
 
-            echo "| **Demos SHA** | \`${DEMOS_SHA}\` |"
+            echo "| **Topology** | \`tests/e2e/topologies/grid-glb-demo\` at tested Grid SHA |"
             echo "| **Mode** | \`${MODE}\` |"
             echo "| **GLB result** | ${GLB_DISPLAY} |"
             echo "| **Cleanup** | ${CLEANUP_RESULT} |"

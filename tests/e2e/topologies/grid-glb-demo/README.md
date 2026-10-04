@@ -27,6 +27,13 @@ cargo xtask env run-grid-glb-demo \
 The local gateway image must be built from a `praxis-proxy/ai` revision that
 contains [`provider_route`](https://github.com/praxis-proxy/ai/pull/386).
 
+The Grid `Triggered Integration Test` workflow runs this checked-in Forge
+topology through the same `cargo xtask env run-grid-glb-demo` command. It tests
+the resolved Grid main, PR merge, or selected branch revision without checking
+out topology assets from the separate Praxis demos repository. Use the
+workflow's `branch` input to validate a branch in the repository that owns the
+workflow, including a fork branch.
+
 ## What this tests
 
 - Five-cluster global-ingress topology (2 edges, 2 providers, 1 GTM emulator)
