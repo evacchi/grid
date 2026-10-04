@@ -63,6 +63,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           env:
+            - name: RUST_LOG
+              value: {{ include "grid-enrollment.rustLog" . | quote }}
             # CA signing material (file paths; read via std::fs). Key is mounted
             # ONLY into this pod, never the gateway.
             - name: ENROLLMENT_CA_CERT

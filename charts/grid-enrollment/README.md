@@ -78,6 +78,7 @@ Each override takes a Secret reference, so no key material is inlined in values.
 | `ca.provided.keySecretRef` | generate | pre-created CA Secret (tls.crt, tls.key) |
 | `serving.existingSecretRef` | issued from the CA | pre-created serving Secret |
 | `db.type` | `builtin` Postgres | `external` + `db.external.connectionUrlSecretRef` |
+| `db.builtin.pvcAnnotations` | none | annotations on the builtin DB PVC, which holds every site record; under Argo CD set `argocd.argoproj.io/sync-options: Prune=false,Delete=false` |
 | `enrollment.authz` | `kube` (SAR, needs the sar-feature image) | `local` (standalone grid-admin token table) |
 | `enrollment.gridAdminTokens.existingSecretRef` | generated (local authz) | pre-created token Secret (name:token lines) |
 

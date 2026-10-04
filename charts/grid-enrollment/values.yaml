@@ -21,6 +21,13 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# -- Logging, rendered as RUST_LOG.
+log:
+  # -- Level for every module: error, warn, info, debug, or trace.
+  level: info
+  # -- Full RUST_LOG directive, such as "info,enrollment=debug". When set, it replaces level.
+  filter: ""
+
 # ------------------------------------------------------------------------------
 # Grid CA. Default: GENERATE on install (bootstrap Job). Escape hatch: provide.
 # The signing key (grid-ca-key) is mounted ONLY into the enrollment pod. The
@@ -156,6 +163,9 @@ db:
     # image (image.pullPolicy=Never, kind/airgap) does not force Postgres to Never.
     pullPolicy: IfNotPresent
     storage: 8Gi
+    # The PVC holds every site record. A GitOps install annotates it so its tool never prunes
+    # or deletes it, e.g. argocd.argoproj.io/sync-options: Prune=false,Delete=false.
+    pvcAnnotations: {}
     resources: {}
     auth:
       database: enrollment

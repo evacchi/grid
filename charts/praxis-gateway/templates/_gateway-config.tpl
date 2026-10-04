@@ -11,7 +11,7 @@ The data of the chart-rendered gateway ConfigMap, also hashed into checksum/conf
       upstream_ca_file: {{ printf "%s/%s" $cfg.upstreamCA.mountPath ($cfg.upstreamCA.key | default "ca.crt") | quote }}
     {{- end }}
     admin:
-      address: "127.0.0.1:9901"
+      address: {{ include "praxis-gateway.renderedAdminAddress" . | quote }}
     listeners:
       - name: gateway
         address: "0.0.0.0:{{ .Values.port.containerPort }}"

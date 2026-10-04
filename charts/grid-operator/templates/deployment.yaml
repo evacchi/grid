@@ -104,7 +104,7 @@ spec:
             - name: GRID_METRICS_ADDR
               value: {{ .Values.metrics.bindAddress | quote }}
             - name: RUST_LOG
-              value: {{ .Values.log.level | quote }}
+              value: {{ include "grid-operator.rustLog" . | quote }}
             {{- with include "grid-operator.enrollment.env" . | trim }}
             {{- . | nindent 12 }}
             {{- end }}

@@ -267,3 +267,11 @@ reach, and an invite for the same name would mint a second identity for it.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+RUST_LOG for the chart's Rust binaries: log.filter when set, else log.level.
+*/}}
+{{- define "grid-enrollment.rustLog" -}}
+{{- $log := .Values.log | default dict -}}
+{{- $log.filter | default $log.level | default "info" -}}
+{{- end }}

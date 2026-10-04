@@ -1957,12 +1957,12 @@ mod integration_tests {
 
     #[tokio::test]
     async fn probe_against_closed_port_is_unreachable() {
-        // Bind then immediately drop the listener: the port is free again
-        // but nothing is listening, so connect must fail — a real refused
-        // connection, not a stubbed-out unit-test double.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // Bound but never listening: connects are refused, and no parallel test can take the port.
+        let closed = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        closed
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let addr = closed.local_addr().unwrap().as_socket().unwrap();
         let endpoint = format!("http://{addr}/mcp");
         let kube_client = unused_kube_client();
 

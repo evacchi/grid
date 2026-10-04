@@ -94,7 +94,12 @@ resolve_forge() {
   [[ -x $FORGE_BIN ]] || cargo build --manifest-path "$ROOT/Cargo.toml" -p forge --bin praxis-forge
 }
 
-cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$PREFIX-$1"; }
+# Captured, not piped: under pipefail grep -q's early exit can fail the pipeline on a match.
+cluster_exists() {
+  local clusters
+  clusters=$(kind get clusters 2>/dev/null || true)
+  grep -qx "$PREFIX-$1" <<<"$clusters"
+}
 
 image() { printf '%s%s:%s' "$IMAGE_PREFIX" "$1" "$IMAGE_TAG"; }
 
@@ -357,7 +362,9 @@ network_active() {
 }
 
 site_phase_in() { # <context> <site> <phase ERE>
-  k "$1" get gridsite "$2" -o jsonpath='{.status.phase}' | grep -qxE "$3"
+  local phase
+  phase=$(k "$1" get gridsite "$2" -o jsonpath='{.status.phase}') || return 1
+  grep -qxE "$3" <<<"$phase"
 }
 
 overlay_distributed() {
@@ -395,9 +402,25 @@ site_call() {
   echo "$rc" >"$out.rc"
 }
 
-# tls_refused <out prefix>: the handshake failed with a TLS alert, curl exit 35 or 56.
+# tls_refused <out prefix> <http code>: no HTTP response, and the handshake failed with a TLS
+# alert in curl's stderr (exit 35, 55 or 56).
 tls_refused() {
-  [[ $(cat "$1.rc") == 35 || $(cat "$1.rc") == 56 ]] && grep -qiE 'alert|certificate required' "$1.err"
+  [[ $2 == 000 ]] || return 1
+  case $(cat "$1.rc") in
+    35 | 55 | 56) grep -qiE 'alert|certificate required' "$1.err" ;;
+    *) return 1 ;;
+  esac
+}
+
+# refused_handshake <out prefix> <http code> [curl args...]: tls_refused, or a send failure
+# (exit 55) with no alert, where the same identity calling again with no body must be refused.
+refused_handshake() {
+  local out=$1 code=$2
+  shift 2
+  tls_refused "$out" "$code" && return 0
+  [[ $code == 000 && $(cat "$out.rc") == 55 ]] || return 1
+  code=$(site_call "$out.nobody" /v1/models "$@")
+  tls_refused "$out.nobody" "$code"
 }
 
 # refused_path <label> <want code> <path> [curl args...]: hub identity, no provider header.
@@ -463,10 +486,10 @@ assert_serving() {
 
   REFUSALS_FROM=$(date -u +%Y-%m-%dT%H:%M:%S)
   code=$(chat_body | site_call "$WORK/nocert" /v1/chat/completions -d @-)
-  if tls_refused "$WORK/nocert"; then
+  if refused_handshake "$WORK/nocert" "$code"; then
     pass "anonymous caller: TLS alert, curl exit $(cat "$WORK/nocert.rc") ($(tr '\n' ' ' <"$WORK/nocert.err" | cut -c1-100))"
   else
-    fail "anonymous caller: HTTP $code, curl exit $(cat "$WORK/nocert.rc"), want a TLS alert"
+    fail "anonymous caller: HTTP $code, curl exit $(cat "$WORK/nocert.rc"), want a TLS alert ($(tr '\n' ' ' <"$WORK/nocert.err" | cut -c1-200))"
   fi
 
   # The backend serves /health, so a 404 here is the gateway refusing it.
@@ -484,10 +507,10 @@ assert_serving() {
   code=$(chat_body | site_call "$WORK/rogue" /v1/chat/completions --cert "$d/rogue.crt" --key "$d/rogue.key" -d @-)
   if [[ $MODE == pin && $code == 403 ]] && ! grep -qi '^x-grid-provider-site:' "$WORK/rogue.hdr"; then
     pass "enrolled identity the site does not pin: 403"
-  elif [[ $MODE == spiffe ]] && tls_refused "$WORK/rogue"; then
+  elif [[ $MODE == spiffe ]] && refused_handshake "$WORK/rogue" "$code" --cert "$d/rogue.crt" --key "$d/rogue.key"; then
     pass "enrolled identity outside spiffeIds: TLS alert, curl exit $(cat "$WORK/rogue.rc")"
   else
-    fail "enrolled identity the site does not trust: HTTP $code, curl exit $(cat "$WORK/rogue.rc")"
+    fail "enrolled identity the site does not trust: HTTP $code, curl exit $(cat "$WORK/rogue.rc") ($(tr '\n' ' ' <"$WORK/rogue.err" | cut -c1-200))"
   fi
 }
 

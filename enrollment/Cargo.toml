@@ -64,6 +64,7 @@ workspace = true
 
 [dev-dependencies]
 uuid = { workspace = true, features = ["serde"] }
+socket2 = { workspace = true }
 http-body-util = { workspace = true }
 rcgen = { workspace = true }
 time = { workspace = true }

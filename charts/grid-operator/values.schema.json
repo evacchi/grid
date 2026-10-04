@@ -227,8 +227,15 @@
       "additionalProperties": false,
       "properties": {
         "level": {
+          "description": "Level for every module: off, error, warn, info, debug, or trace, in any case. A full RUST_LOG directive is still accepted here for compatibility; prefer filter.",
+          "anyOf": [
+            { "type": "string", "pattern": "^(?i)(off|error|warn|info|debug|trace)$" },
+            { "type": "string", "pattern": "[=,]" }
+          ]
+        },
+        "filter": {
           "type": "string",
-          "description": "RUST_LOG filter directive."
+          "description": "Full RUST_LOG directive, such as info,operator=debug. When set, it replaces level."
         }
       }
     },

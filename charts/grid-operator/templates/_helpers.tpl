@@ -149,3 +149,11 @@ Annotations that order a grid custom resource after its CRD under Argo CD.
 argocd.argoproj.io/sync-wave: "1"
 argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 {{- end }}
+
+{{/*
+RUST_LOG for the chart's Rust binaries: log.filter when set, else log.level.
+*/}}
+{{- define "grid-operator.rustLog" -}}
+{{- $log := .Values.log | default dict -}}
+{{- $log.filter | default $log.level | default "info" -}}
+{{- end }}

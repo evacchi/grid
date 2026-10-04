@@ -131,6 +131,8 @@ jobs:
           helm unittest "${charts[@]}"
 
       - name: Validate charts (static)
+        env:
+          RENDER_DIR: ${{ runner.temp }}/helm-rendered
         run: ./scripts/verify-helm-chart.sh
 
       - name: Validate rendered manifests against Kubernetes schema
@@ -153,7 +155,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rendered-manifests-${{ matrix.helm }}
-          path: /tmp/helm-rendered-*.yaml
+          path: ${{ runner.temp }}/helm-rendered/
           if-no-files-found: ignore
           retention-days: 5
 

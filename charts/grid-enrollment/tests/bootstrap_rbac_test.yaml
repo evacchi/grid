@@ -258,8 +258,10 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --site-name
-      - notExists:
+      - equal:
           path: spec.template.spec.containers[0].env
+          value:
+            - {name: RUST_LOG, value: info}
 
   - it: grants the bootstrap only its Secrets in the hub namespace
     template: templates/certs/ca-bootstrap-rbac.yaml

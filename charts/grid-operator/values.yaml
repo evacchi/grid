@@ -90,10 +90,13 @@ rbac:
 # Event, and Service access. The release namespace is always included.
 resourceNamespaces: []
 
-# -- Logging configuration.
+# -- Logging, rendered as RUST_LOG.
 log:
-  # -- RUST_LOG filter directive.
+  # -- Level for every module: error, warn, info, debug, or trace. A full RUST_LOG
+  # directive still works here, as before; prefer filter for one.
   level: "info"
+  # -- Full RUST_LOG directive, such as "info,operator=debug". When set, it replaces level.
+  filter: ""
 
 # Signal propagation mode is grid-wide configuration, set on the GridNetwork
 # via the grid-site chart's signalTransport value, not on the operator.

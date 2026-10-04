@@ -49,6 +49,13 @@ spec:
           securityContext:
             {{- toYaml .Values.enrollment.securityContext | nindent 12 }}
           command: ["enrollment", "bootstrap"]
+          env:
+            - name: RUST_LOG
+              value: {{ include "grid-enrollment.rustLog" . | quote }}
+            {{- if and .Values.hubSite.name .Values.enrollment.certLifetimeSecs }}
+            - name: ENROLLMENT_CERT_LIFETIME_SECS
+              value: {{ .Values.enrollment.certLifetimeSecs | quote }}
+            {{- end }}
           args:
             - "--namespace"
             - "{{ .Release.Namespace }}"
@@ -121,11 +128,6 @@ spec:
             - "--force-regenerate"
             {{- end }}
             {{- end }}
-          {{- if and .Values.hubSite.name .Values.enrollment.certLifetimeSecs }}
-          env:
-            - name: ENROLLMENT_CERT_LIFETIME_SECS
-              value: {{ .Values.enrollment.certLifetimeSecs | quote }}
-          {{- end }}
           {{- with .Values.ca.bootstrap.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
