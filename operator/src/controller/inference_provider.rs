@@ -24,8 +24,8 @@
 //! | `spec.gridNetworkRef` not found | `Unavailable` |
 //! | Config valid, probe returns transport failure | `Unavailable` |
 //! | Config valid, probe returns degraded response | `Degraded` |
-//! | `healthCheck.tls` Secret missing, key absent, or material invalid | `Degraded` |
-//! | `metricsConfig.tls` Secret missing, key absent, or material invalid | `Degraded` |
+//! | Health probe's shared or `healthCheck.tls` Secret is missing, has no key, or is invalid | `Degraded` |
+//! | Metrics' shared or `metricsConfig.tls` Secret is missing, has no key, or is invalid | `Degraded` |
 //! | Config valid, probe healthy or not run, no matching sites | `Pending` |
 //! | Config valid, probe healthy or not run, ≥1 matching site | `Available` |
 //!
@@ -85,8 +85,7 @@ use crate::{
 /// Requeue interval after a successful reconciliation when no `healthCheck.interval` is set.
 const REQUEUE_INTERVAL: Duration = Duration::from_secs(300);
 
-/// Shorter requeue interval for providers with `metricsConfig.tls` or
-/// `healthCheck.tls` configured.
+/// Shorter requeue interval for providers with shared or feature-specific TLS configured.
 ///
 /// Without a cluster-wide Secret watch, the operator detects TLS material
 /// rotation (certificate renewal, CA rollover) by re-reconciling on this
@@ -434,10 +433,7 @@ pub(crate) async fn probe_endpoint(
 
     // Fail-closed: TLS config with a non-https URL is a misconfiguration.
     if tls_config.is_some() && uri.scheme_str() != Some("https") {
-        tracing::warn!(
-            url,
-            "healthCheck.tls configured but endpoint uses http; probe will fail"
-        );
+        tracing::warn!(url, "endpoint TLS configured but endpoint uses http; probe will fail");
         return ProbeOutcome::Unavailable;
     }
 
@@ -542,7 +538,6 @@ async fn resolve_phase_and_sites(
     // Resolve health check TLS config (if configured).  On failure, map
     // the error to a structured status reason and mark the provider Degraded.
     let health_tls_config = if let Some(hc) = &provider.spec.health_check
-        // Resolve tls config and use health_check config override if present.
         && let tls = hc.tls.as_ref().or(provider.spec.tls.as_ref())
         && tls.is_some()
     {
@@ -587,7 +582,6 @@ async fn resolve_phase_and_sites(
     // Validate metrics TLS configuration.
     if phase == ProviderPhase::Available
         && let Some(mc) = &provider.spec.metrics_config
-        // Resolve tls config and use metrics config override if present.
         && let Some(tls) = mc.tls.as_ref().or(provider.spec.tls.as_ref())
         && let Some(tls_reason) = provider_metrics::verify_metrics_tls_accessible(client, Some(tls)).await?
     {
@@ -734,6 +728,7 @@ async fn update_status(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, reason = "tests")]
 mod tests {
     use super::*;
+    use crate::resources::test_doubles::start_tls_http_server as start_tls_test_server;
 
     #[test]
     fn reconciler_status_matches_only_reconciler_fields() {
@@ -951,6 +946,102 @@ mod tests {
             }
         }))
         .unwrap_or_else(|_| std::process::abort())
+    }
+
+    /// Build a health-check provider whose shared TLS trusts `ca_secret_name`.
+    fn provider_with_shared_health_tls(network: &str, ca_secret_name: &str, endpoint: &str) -> InferenceProvider {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "grid.praxis.fast/v1alpha1",
+            "kind": "InferenceProvider",
+            "metadata": { "name": "prov" },
+            "spec": {
+                "gridNetworkRef": network,
+                "providerKind": "self_hosted",
+                "backendKind": "local",
+                "endpoint": endpoint,
+                "models": [{"name": "model"}],
+                "tls": {
+                    "caSecretRef": { "name": ca_secret_name, "namespace": "default" }
+                },
+                "healthCheck": { "path": "/health" }
+            }
+        }))
+        .unwrap_or_else(|_| std::process::abort())
+    }
+
+    #[tokio::test]
+    async fn health_check_inherits_shared_tls_for_https_provider_endpoint() {
+        let ca = certs::generate_ca("shared-provider-ca").unwrap_or_else(|_| std::process::abort());
+        let server_cert =
+            certs::generate_dns_cert(&ca, "test-server", "localhost").unwrap_or_else(|_| std::process::abort());
+        let endpoint = start_tls_test_server(
+            &server_cert.cert_pem,
+            &server_cert.key_pem,
+            b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .await;
+        let client = mock_kube_client_for_health_tls(
+            "net-1",
+            HashMap::from([("shared-ca", secret_with_key("ca.crt", ca.cert_pem.as_bytes()))]),
+        );
+        let provider = provider_with_shared_health_tls("net-1", "shared-ca", &endpoint);
+
+        let (phase, matching, reason) = resolve_phase_and_sites(&provider, &client, None)
+            .await
+            .expect("mocked API and TLS probe must complete");
+
+        assert_eq!(
+            phase,
+            ProviderPhase::Pending,
+            "a successful probe preserves empty-site phase"
+        );
+        assert!(matching.is_empty(), "no GridSites exist in this fixture");
+        assert!(reason.is_none(), "shared CA Secret should resolve for the health probe");
+    }
+
+    #[tokio::test]
+    async fn health_check_override_takes_precedence_over_shared_tls() {
+        let ca = certs::generate_ca("override-provider-ca").unwrap_or_else(|_| std::process::abort());
+        let server_cert =
+            certs::generate_dns_cert(&ca, "test-server", "localhost").unwrap_or_else(|_| std::process::abort());
+        let endpoint = start_tls_test_server(
+            &server_cert.cert_pem,
+            &server_cert.key_pem,
+            b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        )
+        .await;
+        let client = mock_kube_client_for_health_tls(
+            "net-1",
+            HashMap::from([("override-ca", secret_with_key("ca.crt", ca.cert_pem.as_bytes()))]),
+        );
+        let mut provider = provider_with_shared_health_tls("net-1", "missing-shared-ca", &endpoint);
+        if let Some(health_check) = provider.spec.health_check.as_mut() {
+            health_check.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("override-ca"));
+        }
+
+        let (phase, _matching, reason) = resolve_phase_and_sites(&provider, &client, None)
+            .await
+            .expect("mocked API and TLS probe must complete");
+
+        assert_eq!(
+            phase,
+            ProviderPhase::Pending,
+            "health TLS override should authenticate the endpoint"
+        );
+        assert!(reason.is_none(), "the overridden CA Secret should be used");
+    }
+
+    #[tokio::test]
+    async fn health_check_shared_tls_resolution_failure_degrades_provider() {
+        let client = mock_kube_client_for_health_tls("net-1", HashMap::new());
+        let provider = provider_with_shared_health_tls("net-1", "absent-shared-ca", "https://localhost:8443");
+
+        let (phase, _matching, reason) = resolve_phase_and_sites(&provider, &client, None)
+            .await
+            .expect("mocked API calls must not fail");
+
+        assert_eq!(phase, ProviderPhase::Degraded);
+        assert_eq!(reason.as_deref(), Some("HealthCheckTlsSecretMissing"));
     }
 
     #[tokio::test]
@@ -2365,85 +2456,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // probe_endpoint — TLS tests (real certificates, real handshakes)
     // -----------------------------------------------------------------------
-
-    /// Start a one-shot TLS server on localhost and return the URL.
-    ///
-    /// Mirrors `metrics_scraper::tests::start_tls_test_server` but lives
-    /// in this module so it can be used by `probe_endpoint` TLS tests.
-    #[cfg(not(feature = "fips"))]
-    async fn start_tls_test_server(server_cert_pem: &str, server_key_pem: &str, response: Vec<u8>) -> String {
-        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-        let server_certs = CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let server_key = PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes()).unwrap();
-
-        let server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(server_certs, server_key)
-            .unwrap();
-
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        tokio::spawn(async move {
-            if let Ok((stream, _)) = listener.accept().await
-                && let Ok(tls_stream) = acceptor.accept(stream).await
-            {
-                let (mut reader, mut writer) = tokio::io::split(tls_stream);
-                let mut buf = [0_u8; 4096];
-                drop(reader.read(&mut buf).await);
-                drop(writer.write_all(&response).await);
-            }
-        });
-
-        format!("https://localhost:{port}")
-    }
-
-    /// OpenSSL twin of the one-shot TLS server for `fips` probe tests.
-    #[cfg(feature = "fips")]
-    #[expect(clippy::too_many_lines, reason = "OpenSSL test server setup")]
-    async fn start_tls_test_server(server_cert_pem: &str, server_key_pem: &str, response: Vec<u8>) -> String {
-        use openssl::{
-            pkey::PKey,
-            ssl::{Ssl, SslAcceptor, SslMethod},
-            x509::X509,
-        };
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-        let cert = X509::from_pem(server_cert_pem.as_bytes()).unwrap();
-        let key = PKey::private_key_from_pem(server_key_pem.as_bytes()).unwrap();
-        let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-        builder.set_certificate(&cert).unwrap();
-        builder.set_private_key(&key).unwrap();
-        builder.check_private_key().unwrap();
-        let acceptor = builder.build();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        tokio::spawn(async move {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            let Ok(ssl) = Ssl::new(acceptor.context()) else {
-                return;
-            };
-            let Ok(mut tls) = tokio_openssl::SslStream::new(ssl, stream) else {
-                return;
-            };
-            if std::pin::Pin::new(&mut tls).accept().await.is_ok() {
-                let (mut reader, mut writer) = tokio::io::split(tls);
-                let mut buf = [0_u8; 4096];
-                drop(reader.read(&mut buf).await);
-                drop(writer.write_all(&response).await);
-            }
-        });
-
-        format!("https://localhost:{port}")
-    }
 
     #[tokio::test]
     async fn probe_tls_with_matching_ca_yields_healthy() {
