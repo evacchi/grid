@@ -14,22 +14,22 @@
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct Enrollment {
     /**The grid CA certificate, PEM encoded. Returned with the leaf so a
-site holds the trust anchor without a separate fetch.
-*/
+    site holds the trust anchor without a separate fetch.
+    */
     #[serde(rename = "caCertificate")]
     pub ca_certificate: ::std::string::String,
     ///The issued certificate, PEM encoded.
     pub certificate: ::std::string::String,
     /**The issued-enrollment row identifier. Additive: a future retrieval or
-idempotent-replay lookup can key on it.
-*/
+    idempotent-replay lookup can key on it.
+    */
     pub id: ::uuid::Uuid,
     /**Lowercase hex SHA-256 over the request's public key.
-*/
+    */
     #[serde(rename = "publicKeySha256")]
     pub public_key_sha256: ::std::string::String,
     /**The name the grid assigned, carried as a URI SAN on the certificate.
-*/
+    */
     #[serde(rename = "spiffeId")]
     pub spiffe_id: ::std::string::String,
 }
@@ -39,8 +39,8 @@ else. The token pins the name, so a submission cannot assert one.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct EnrollmentRequest {
     /**PKCS#10 certificate signing request, PEM encoded. The private key
-stays with the requester and is never sent.
-*/
+    stays with the requester and is never sent.
+    */
     pub csr: ::std::string::String,
 }
 ///A site's enrollment record. Digests only, never key material.
@@ -52,8 +52,8 @@ pub struct EnrollmentStatus {
     #[serde(rename = "incarnationStartedAt")]
     pub incarnation_started_at: ::std::string::String,
     /**When the latest certificate this service issued expires. Null for a
-reserved name's bootstrap certificate until its first rotation.
-*/
+    reserved name's bootstrap certificate until its first rotation.
+    */
     #[serde(rename = "notAfter", skip_serializing_if = "::std::option::Option::is_none")]
     pub not_after: ::std::option::Option<::std::string::String>,
     ///The key that one replaced, which may only retry a lost rotation.
@@ -68,34 +68,20 @@ reserved name's bootstrap certificate until its first rotation.
     ///A name bootstrap issues, such as the hub's.
     pub reserved: bool,
     ///When the record last took a new key, by rotation or a bootstrap seed. Null if it never has.
-    #[serde(
-        rename = "rotatedAt",
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    #[serde(rename = "rotatedAt", skip_serializing_if = "::std::option::Option::is_none")]
     pub rotated_at: ::std::option::Option<::std::string::String>,
     ///The site name the record holds.
     #[serde(rename = "siteName")]
     pub site_name: ::std::string::String,
     /**frozen after a rotation fork. A frozen site cannot rotate until a
-grid-admin deletes its enrollment and it enrolls again.
-*/
+    grid-admin deletes its enrollment and it enrolls again.
+    */
     pub state: EnrollmentStatusState,
 }
 /**frozen after a rotation fork. A frozen site cannot rotate until a
 grid-admin deletes its enrollment and it enrolls again.
 */
-#[derive(
-    ::serde::Deserialize,
-    ::serde::Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd
-)]
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EnrollmentStatusState {
     #[serde(rename = "active")]
     Active,
@@ -112,9 +98,7 @@ impl ::std::fmt::Display for EnrollmentStatusState {
 }
 impl ::std::str::FromStr for EnrollmentStatusState {
     type Err = self::error::ConversionError;
-    fn from_str(
-        value: &str,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
             "active" => Ok(Self::Active),
             "frozen" => Ok(Self::Frozen),
@@ -124,17 +108,13 @@ impl ::std::str::FromStr for EnrollmentStatusState {
 }
 impl ::std::convert::TryFrom<&str> for EnrollmentStatusState {
     type Error = self::error::ConversionError;
-    fn try_from(
-        value: &str,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<::std::string::String> for EnrollmentStatusState {
     type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn try_from(value: ::std::string::String) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
@@ -159,20 +139,17 @@ pub struct EnrollmentToken {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct EnrollmentTokenRequest {
     /**How long the token stays usable, in seconds. A default applies when
-unset. An explicit value must be greater than zero and at most
-604800 (seven days).
-*/
-    #[serde(
-        rename = "expiresInSecs",
-        skip_serializing_if = "::std::option::Option::is_none"
-    )]
+    unset. An explicit value must be greater than zero and at most
+    604800 (seven days).
+    */
+    #[serde(rename = "expiresInSecs", skip_serializing_if = "::std::option::Option::is_none")]
     pub expires_in_secs: ::std::option::Option<i64>,
     ///The grid the site joins.
     #[serde(rename = "gridNetworkRef")]
     pub grid_network_ref: ::std::string::String,
     /**The name the token pins. The grid-admin chooses it, so the site
-never names itself.
-*/
+    never names itself.
+    */
     #[serde(rename = "siteName")]
     pub site_name: ::std::string::String,
 }
@@ -207,18 +184,7 @@ pub struct Error {
     pub message: ::std::string::String,
 }
 ///Machine-readable code, from the table above.
-#[derive(
-    ::serde::Deserialize,
-    ::serde::Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd
-)]
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ErrorError {
     #[serde(rename = "invalid_csr")]
     InvalidCsr,
@@ -274,9 +240,7 @@ impl ::std::fmt::Display for ErrorError {
 }
 impl ::std::str::FromStr for ErrorError {
     type Err = self::error::ConversionError;
-    fn from_str(
-        value: &str,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
             "invalid_csr" => Ok(Self::InvalidCsr),
             "invalid_site_name" => Ok(Self::InvalidSiteName),
@@ -299,17 +263,13 @@ impl ::std::str::FromStr for ErrorError {
 }
 impl ::std::convert::TryFrom<&str> for ErrorError {
     type Error = self::error::ConversionError;
-    fn try_from(
-        value: &str,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
 impl ::std::convert::TryFrom<::std::string::String> for ErrorError {
     type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+    fn try_from(value: ::std::string::String) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
@@ -319,18 +279,12 @@ pub mod error {
     pub struct ConversionError(::std::borrow::Cow<'static, str>);
     impl ::std::error::Error for ConversionError {}
     impl ::std::fmt::Display for ConversionError {
-        fn fmt(
-            &self,
-            f: &mut ::std::fmt::Formatter<'_>,
-        ) -> Result<(), ::std::fmt::Error> {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
             ::std::fmt::Display::fmt(&self.0, f)
         }
     }
     impl ::std::fmt::Debug for ConversionError {
-        fn fmt(
-            &self,
-            f: &mut ::std::fmt::Formatter<'_>,
-        ) -> Result<(), ::std::fmt::Error> {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
             ::std::fmt::Debug::fmt(&self.0, f)
         }
     }

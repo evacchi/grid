@@ -5,8 +5,8 @@
 //! [`rustls::ClientConfig`], and validating that referenced Secrets are
 //! accessible before a live probe runs.
 //!
-//! Used by both metrics scraping (`provider_metrics`) and
-//! health check probing (`controller::inference_provider`).
+//! Used by metrics scraping (`provider_metrics`), health check probing
+//! (`controller::inference_provider`), and model discovery (`served_models`).
 
 use std::sync::Arc;
 

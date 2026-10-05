@@ -68,6 +68,15 @@ pub struct InferenceProviderSpec {
     /// HTTP endpoint URL.
     pub endpoint: String,
 
+    /// Shared TLS configuration for provider health checks, metrics scraping,
+    /// and model discovery.
+    ///
+    /// A feature-specific `tls` setting overrides this value when it needs a
+    /// different CA bundle or client identity. When neither is set, the
+    /// request uses system root certificates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<EndpointTlsConfig>,
+
     /// Health check configuration.
     pub health_check: Option<HealthCheckConfig>,
 
@@ -121,6 +130,15 @@ pub struct InferenceProviderSpec {
     /// Optional administrative traffic policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic_policy: Option<TrafficPolicy>,
+}
+
+impl InferenceProviderSpec {
+    /// Whether shared provider TLS or a health-check or metrics TLS override is configured.
+    pub(crate) fn has_tls(&self) -> bool {
+        self.tls.is_some()
+            || self.metrics_config.as_ref().is_some_and(|mc| mc.tls.is_some())
+            || self.health_check.as_ref().is_some_and(|hc| hc.tls.is_some())
+    }
 }
 
 /// Administrative policy for provider traffic.
@@ -230,12 +248,12 @@ pub struct MetricsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_metrics_seconds: Option<u32>,
 
-    /// TLS configuration for the metrics endpoint.
+    /// Optional TLS override for the metrics endpoint.
     ///
-    /// When set, the operator uses the provided CA certificate for TLS server
-    /// verification and optionally presents a client certificate for mutual TLS
-    /// (mTLS).  When absent, the scraper uses system root certificates
-    /// (backward-compatible).
+    /// When absent, `InferenceProvider.spec.tls` is used when configured;
+    /// otherwise, the scraper uses system root certificates. Set this only
+    /// when the metrics endpoint requires different trust material or a
+    /// different client identity.
     ///
     /// **Fail-closed:** when configured but the referenced Secrets cannot be
     /// resolved or contain invalid material, the scrape is skipped entirely.
@@ -279,8 +297,8 @@ pub enum MetricsAuthType {
 ///
 /// Controls how the operator verifies the remote server's identity and,
 /// optionally, authenticates itself to the server via a client certificate
-/// (mutual TLS / mTLS).  Used by both `metricsConfig.tls` and
-/// `healthCheck.tls`.
+/// (mutual TLS / mTLS). Used by `InferenceProvider.spec.tls` and optional
+/// feature-specific TLS overrides.
 ///
 /// Secret references include explicit `namespace` and `name` fields.
 /// The operator reads referenced Secrets during reconciliation —
@@ -513,12 +531,12 @@ pub struct HealthCheckConfig {
     /// Timeout per check (e.g. "5s").
     pub timeout: Option<String>,
 
-    /// TLS configuration for the health probe endpoint.
+    /// Optional TLS override for the health probe endpoint.
     ///
-    /// When set, the operator uses the provided CA certificate for TLS server
-    /// verification and optionally presents a client certificate for mutual TLS
-    /// (mTLS).  When absent, the probe uses system root certificates
-    /// (backward-compatible).
+    /// When absent, `InferenceProvider.spec.tls` is used when configured;
+    /// otherwise, the probe uses system root certificates. Set this only when
+    /// the health endpoint requires different trust material or a different
+    /// client identity.
     ///
     /// **Fail-closed:** when configured but the referenced Secrets cannot be
     /// resolved or contain invalid material, the probe is skipped entirely.
@@ -561,9 +579,12 @@ pub struct OpenAiModelsSource {
     #[serde(default = "default_models_path")]
     pub path: String,
 
-    /// TLS configuration for the model-listing endpoint.
+    /// Optional TLS override for the model-listing endpoint.
     ///
-    /// When absent, system root certificates are used.
+    /// When absent, `InferenceProvider.spec.tls` is used when configured;
+    /// otherwise, system root certificates are used. Set this only when the
+    /// model-listing endpoint requires different trust material or a different
+    /// client identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<EndpointTlsConfig>,
 }

@@ -76,9 +76,8 @@ use crate::{
         },
     },
     error::OperatorError,
-    resources::{credentials, provider_metrics},
+    resources::{credentials, endpoint_tls, provider_metrics},
 };
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -346,8 +345,8 @@ fn parse_duration_str(s: &str) -> Option<Duration> {
 ///
 /// When `spec.healthCheck.interval` is configured and parseable, the
 /// provider is requeued after that duration so that health probes run
-/// at approximately the requested cadence.  When TLS is configured
-/// (`metricsConfig.tls` or `healthCheck.tls`), the effective interval
+/// at approximately the requested cadence. When TLS is configured
+/// (`spec.tls` or a feature-specific override), the effective interval
 /// is capped at [`TLS_REQUEUE_INTERVAL`] (60s) so the operator detects
 /// certificate rotation without a cluster-wide Secret watch.  When no
 /// interval is configured, falls back to [`TLS_REQUEUE_INTERVAL`] if
@@ -367,10 +366,7 @@ pub(crate) fn requeue_interval_for_provider(spec: &InferenceProviderSpec) -> Dur
         .and_then(|hc| hc.interval.as_deref())
         .and_then(parse_duration_str);
 
-    let has_tls = spec.metrics_config.as_ref().is_some_and(|mc| mc.tls.is_some())
-        || spec.health_check.as_ref().is_some_and(|hc| hc.tls.is_some());
-
-    match (configured_interval, has_tls) {
+    match (configured_interval, spec.has_tls()) {
         (Some(interval), true) => {
             let capped = interval.min(TLS_REQUEUE_INTERVAL);
             if capped < interval {
@@ -546,9 +542,11 @@ async fn resolve_phase_and_sites(
     // Resolve health check TLS config (if configured).  On failure, map
     // the error to a structured status reason and mark the provider Degraded.
     let health_tls_config = if let Some(hc) = &provider.spec.health_check
-        && hc.tls.is_some()
+        // Resolve tls config and use health_check config override if present.
+        && let tls = hc.tls.as_ref().or(provider.spec.tls.as_ref())
+        && tls.is_some()
     {
-        match crate::resources::endpoint_tls::resolve_tls_config(hc.tls.as_ref(), Some(client), name).await {
+        match endpoint_tls::resolve_tls_config(tls, Some(client), name).await {
             Ok(cfg) => cfg,
             Err((reason, e)) => {
                 let reason_str = reason.as_status_reason("HealthCheck");
@@ -589,8 +587,9 @@ async fn resolve_phase_and_sites(
     // Validate metrics TLS configuration.
     if phase == ProviderPhase::Available
         && let Some(mc) = &provider.spec.metrics_config
-        && mc.tls.is_some()
-        && let Some(tls_reason) = provider_metrics::verify_metrics_tls_accessible(client, mc.tls.as_ref()).await?
+        // Resolve tls config and use metrics config override if present.
+        && let Some(tls) = mc.tls.as_ref().or(provider.spec.tls.as_ref())
+        && let Some(tls_reason) = provider_metrics::verify_metrics_tls_accessible(client, Some(tls)).await?
     {
         tracing::warn!(
             name,
@@ -645,7 +644,6 @@ pub(crate) fn sites_matching_selector(provider: &InferenceProvider, sites: &[Gri
     names.dedup();
     names
 }
-
 
 /// The sites hosting `provider`: this site alone when its selector is empty and this site is in
 /// the provider's network, as the routing overlay attributes it, else every site the selector matches.
@@ -721,8 +719,7 @@ async fn update_status(
         "status": status
     });
 
-    api.patch_status(name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(patch))
-        .await?;
+    Box::pin(api.patch_status(name, &PatchParams::apply(FIELD_MANAGER).force(), &Patch::Apply(patch))).await?;
 
     info!(name, "updated InferenceProvider status");
     Ok(())
@@ -2674,6 +2671,7 @@ mod tests {
             gateway_ref: None,
             cost: None,
             endpoint: endpoint.to_owned(),
+            tls: None,
             health_check,
             models: vec![crate::crd::inference_provider::ModelInfo {
                 name: "model-a".to_owned(),

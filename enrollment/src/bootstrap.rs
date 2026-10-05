@@ -471,7 +471,6 @@ async fn ensure_seed(
     Ok(())
 }
 
-
 /// Keep an existing identity only if this CA issued it for `site`.
 fn existing_identity_kept(ca_cert_pem: &str, cert_pem: &str, site: &str) -> Result<(), String> {
     match certs::verify_site_cert(ca_cert_pem, cert_pem, site) {

@@ -140,12 +140,14 @@ async fn scrape_provider_signals(
     provider: &InferenceProvider,
     client: Option<&kube::Client>,
 ) -> Option<(String, Vec<crate::signals::Observation>)> {
-    let mc = provider.spec.metrics_config.as_ref()?;
     let (identity, url, wanted) = signal_scrape_plan(provider)?;
-    let tls_config = match resolve_tls_config(mc.tls.as_ref(), client, identity).await {
+    // Resolve tls config and resolve metrics_config override if present.
+    let mc = provider.spec.metrics_config.as_ref()?;
+    let tls_settings = mc.tls.as_ref().or(provider.spec.tls.as_ref());
+    let tls_config = match resolve_tls_config(tls_settings, client, identity).await {
         Ok(cfg) => cfg,
         Err((_reason, e)) => {
-            if mc.tls.is_some() {
+            if tls_settings.is_some() {
                 tracing::warn!(provider = identity, error = %e, "signals: provider metrics TLS unavailable; not scraping in plaintext");
             }
             return None;
@@ -420,6 +422,8 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
         let url = metrics_url(base, &mc.path);
         let timeout = parse_metrics_timeout(&mc.timeout);
         let names = metric_names_from_config(&mc.signal_names, mc.pool_name.as_deref(), mc.queue_capacity);
+        // Resolve tls config and use metrics_config override if present.
+        let tls_settings = mc.tls.as_ref().or(provider.spec.tls.as_ref());
 
         if refresh_interval > Duration::ZERO
             && let Some(cached) = cache_snapshot.get(identity)
@@ -430,7 +434,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
             continue;
         }
 
-        let tls_config = match resolve_tls_config(mc.tls.as_ref(), client, identity).await {
+        let tls_config = match resolve_tls_config(tls_settings, client, identity).await {
             Ok(cfg) => cfg,
             Err((_reason, e)) => {
                 let used_cache = try_cached_metrics(
@@ -448,7 +452,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
                         "metrics TLS resolution failed; using cached sample within stale_metrics_seconds grace period"
                     );
                 } else {
-                    if mc.tls.is_some() {
+                    if tls_settings.is_some() {
                         tracing::warn!(
                             provider = identity,
                             error = %e,
@@ -509,7 +513,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
                         "metrics scrape failed; using cached sample within stale_metrics_seconds grace period"
                     );
                 } else {
-                    if mc.tls.is_some() {
+                    if tls_settings.is_some() {
                         tracing::warn!(
                             provider = identity,
                             url = %url,

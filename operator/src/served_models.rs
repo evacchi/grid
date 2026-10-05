@@ -403,11 +403,13 @@ async fn openai_source(
         Err(e) => return Err(PollError::Credential(e.to_string())),
     };
 
-    let tls = endpoint_tls::resolve_tls_config(openai.tls.as_ref(), Some(client), name)
+    // Resolve tls config and use endpoint config override if present.
+    let ep_tls = openai.tls.as_ref().or(provider.spec.tls.as_ref());
+    let client_tls = endpoint_tls::resolve_tls_config(ep_tls, Some(client), name)
         .await
         .map_err(|(_, message)| PollError::Tls(message))?;
 
-    Ok(OpenAiModels::new(&url, token.as_ref(), tls.as_ref(), timeout)?)
+    Ok(OpenAiModels::new(&url, token.as_ref(), client_tls.as_ref(), timeout)?)
 }
 
 // ---------------------------------------------------------------------------

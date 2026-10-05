@@ -632,7 +632,7 @@ feeds the resulting `BackendMetrics` into overlay scoring.
 | `queueCapacity` | absent | For raw queue-depth counts, divide by this positive capacity and clamp the normalized value to `0.0..1.0`. Without it, queue depth must already be normalized. |
 | `signalNames` | all unset | Mapping from scoring signals to Prometheus metric names. |
 | `staleMetricsSeconds` | absent | Maximum age in seconds for reusing the last successful sample after a failed scrape. Minimum: `1`. For plaintext metrics, absence means immediate neutral fallback; when TLS is configured, an expired/absent sample makes the provider unhealthy and excluded. |
-| `tls` | absent | TLS configuration for metrics scraping.  See [TLS and mTLS](#tls-and-mtls). |
+| `tls` | absent | Optional metrics-specific TLS override. Otherwise `spec.tls` applies. See [TLS and mTLS](#tls-and-mtls). |
 
 Providers without `metricsConfig` and signals without configured metric names
 use neutral metric scores. For scrape failures, plaintext configuration retains
@@ -654,18 +654,25 @@ routing architecture for full semantics.
 
 #### TLS and mTLS
 
-`metricsConfig.tls` enables Secret-backed TLS (and optionally mutual TLS)
-for metrics scraping.  When configured, the operator resolves PEM material
-from Kubernetes Secrets at reconcile time and uses it for all scrape
-requests to this provider's metrics endpoint.
+`spec.tls` configures TLS for provider health checks, metrics scraping, and
+model discovery. The operator resolves the same CA bundle and optional client
+identity for each request. This keeps server verification and mTLS consistent
+across the provider's control-plane checks.
+
+The `tls` fields under `healthCheck`, `metricsConfig`, and
+`modelDiscovery.openAiModels` remain available as per-feature overrides for
+endpoints that need different trust material or a different client identity.
+Without an override, each feature inherits `spec.tls`; if neither is set, the
+request uses system root certificates. Configured custom CA material replaces
+system roots for that request, and invalid TLS material fails closed.
 
 | Field | Required | Meaning |
 |-------|----------|---------|
-| `tls.caSecretRef` | one of | Secret containing the CA certificate for server verification. Default key: `ca.crt`. |
-| `tls.caConfigMapRef` | one of | ConfigMap containing the CA certificate, such as the platform service CA (`openshift-service-ca.crt`, key `service-ca.crt`). Default key: `ca.crt`. |
-| `tls.clientCertificateSecretRef` | no | Secret containing client certificate and private key for mTLS. |
-| `tls.clientCertificateSecretRef.certificateKey` | no | Key within `Secret.data` for the certificate PEM. Default: `tls.crt`. |
-| `tls.clientCertificateSecretRef.privateKeyKey` | no | Key within `Secret.data` for the private key PEM. Default: `tls.key`. |
+| `spec.tls.caSecretRef` | one of | Secret containing the CA certificate for server verification. Default key: `ca.crt`. |
+| `spec.tls.caConfigMapRef` | one of | ConfigMap containing the CA certificate, such as the platform service CA (`openshift-service-ca.crt`, key `service-ca.crt`). Default key: `ca.crt`. |
+| `spec.tls.clientCertificateSecretRef` | no | Secret containing client certificate and private key for mTLS. |
+| `spec.tls.clientCertificateSecretRef.certificateKey` | no | Key within `Secret.data` for the certificate PEM. Default: `tls.crt`. |
+| `spec.tls.clientCertificateSecretRef.privateKeyKey` | no | Key within `Secret.data` for the private key PEM. Default: `tls.key`. |
 
 Set exactly one of `caSecretRef` and `caConfigMapRef`; the configured CA is the only
 trust used. `caSecretRef` follows the same [`SecretRef`](#credential-projection) schema used by
@@ -692,37 +699,39 @@ compatibility behavior.
 
 There is no `insecureSkipVerify` option.
 
-Example (one-way TLS):
+Example (one-way TLS shared across provider checks):
 
 ```yaml
-metricsConfig:
-  path: /metrics
-  timeout: 2s
-  signalNames:
-    queueDepth: vllm:num_requests_waiting
+spec:
   tls:
     caSecretRef:
-      name: metrics-ca
+      name: provider-ca
       namespace: grid-system
+  metricsConfig:
+    path: /metrics
+    timeout: 2s
+    signalNames:
+      queueDepth: vllm:num_requests_waiting
 ```
 
 Example (mTLS):
 
 ```yaml
-metricsConfig:
-  path: /metrics
-  timeout: 2s
-  signalNames:
-    queueDepth: vllm:num_requests_waiting
+spec:
   tls:
     caSecretRef:
-      name: metrics-ca
+      name: provider-ca
       namespace: grid-system
     clientCertificateSecretRef:
-      name: metrics-client-cert
+      name: provider-client-cert
       namespace: grid-system
       certificateKey: tls.crt
       privateKeyKey: tls.key
+  metricsConfig:
+    path: /metrics
+    timeout: 2s
+    signalNames:
+      queueDepth: vllm:num_requests_waiting
 ```
 
 #### Bearer authentication
@@ -742,27 +751,29 @@ ServiceAccount allowed only `get` on the nonResourceURL `/metrics`
 with the TokenRequest API, bound to the operator Pod, reusing it until two thirds of its
 lifetime has passed (about 400 seconds). The token is never logged.
 
-A credential goes only to a host proven by the CA `metricsConfig.tls` names: with
-`auth` set, an `https://` endpoint without `tls` is refused rather than trusted through
-the system roots, and an `http://` endpoint is refused unless `allowPlaintext` is set.
+A credential goes only to a host proven by the CA in `spec.tls` or the
+`metricsConfig.tls` override: with `auth` set, an `https://` endpoint without
+either TLS setting is refused rather than trusted through the system roots,
+and an `http://` endpoint is refused unless `allowPlaintext` is set.
 
 Example (an EPP serving its metrics with the platform service CA):
 
 ```yaml
-metricsConfig:
-  metricsEndpoint: https://qwen3-epp-service.ai-tenant-site-a.svc:9090
-  path: /metrics
-  poolName: qwen3-inference-pool
-  signalNames:
-    queueDepth: llm_d_epp_average_queue_size
-    kvCacheUtilization: llm_d_epp_average_kv_cache_utilization
+spec:
   tls:
     caConfigMapRef:
       name: openshift-service-ca.crt
       namespace: grid
       key: service-ca.crt
-  auth:
-    type: serviceAccountToken
+  metricsConfig:
+    metricsEndpoint: https://qwen3-epp-service.ai-tenant-site-a.svc:9090
+    path: /metrics
+    poolName: qwen3-inference-pool
+    signalNames:
+      queueDepth: llm_d_epp_average_queue_size
+      kvCacheUtilization: llm_d_epp_average_kv_cache_utilization
+    auth:
+      type: serviceAccountToken
 ```
 
 #### Queue depth normalization
@@ -777,12 +788,25 @@ serves. Discovery does not yet affect routing or gossip; `spec.models`
 remains the routing source.
 
 ```yaml
-modelDiscovery:
-  openAiModels:                 # GET {endpoint}{path}, reads data[].id
-    endpoint: http://vllm:8000  # optional; defaults to spec.endpoint
-    path: /v1/models            # default
-    tls: {...}                  # optional; same shape as metricsConfig.tls
+spec:
+  endpoint: https://vllm:8000
+  tls:                          # shared by health, metrics, and discovery
+    caSecretRef:
+      name: provider-ca
+      namespace: grid-system
+  metricsConfig:
+    path: /metrics
+  healthCheck:
+    path: /health
+  modelDiscovery:
+    openAiModels:               # GET {endpoint}{path}, reads data[].id
+      endpoint: https://vllm:8000 # optional; defaults to spec.endpoint
+      path: /v1/models          # default
 ```
+
+Use `healthCheck.tls`, `metricsConfig.tls`, or
+`modelDiscovery.openAiModels.tls` only when that endpoint needs a different
+CA bundle or client certificate from the shared `spec.tls` settings.
 
 The effective request URL appears in `status.modelDiscoveryUrl`. It reflects
 the configured endpoint and path, regardless of whether a poll succeeds, and
