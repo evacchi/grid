@@ -1,5 +1,8 @@
 # AI Grid Network (AGN) Documentation
 
+- [Technical Preview Scope and Limitations](technical-preview-scope.md):
+  routing scope, deployment-owner responsibilities, and topology boundaries.
+
 ## Routing
 
 - [Routing Guide](routing.md): choose a routing behavior and configure policy,

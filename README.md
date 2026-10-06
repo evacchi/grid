@@ -191,6 +191,7 @@ See the [development guide](docs/development.md) and
 
 ## Documentation
 
+- [Technical preview scope and limitations](docs/technical-preview-scope.md)
 - [Architecture overview](docs/architecture/overview.md)
 - [Custom resources](docs/architecture/crds.md)
 - [Routing Guide](docs/routing.md)

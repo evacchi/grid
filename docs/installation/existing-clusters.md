@@ -6,6 +6,9 @@ same charts and installer scripts. The workflow has been validated through
 chart rendering, disposable local clusters, and existing single-node
 Kubernetes clusters.
 
+Review the [technical preview scope and limitations](../technical-preview-scope.md)
+before planning cluster connectivity, provider deployment, and gateway roles.
+
 ## Guides
 
 - **[Adding an Inference Provider](../adding-provider.md)** —
