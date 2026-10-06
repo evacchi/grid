@@ -5,10 +5,43 @@ The data of the chart-rendered gateway ConfigMap, also hashed into checksum/conf
 {{- $cfg := .Values.gatewayConfig }}
 {{- $provider := eq ($cfg.role | default "consumer") "provider" }}
 {{- $apiKey := and (not $provider) (eq ($cfg.auth.mode | default "none") "api-key") }}
+{{- $telemetry := $cfg.telemetry | default dict }}
+{{- $hasSamplingRate := and (hasKey $telemetry "samplingRate") (ne $telemetry.samplingRate nil) }}
+{{- $hasBatchInterval := and (hasKey $telemetry "batchIntervalSecs") (ne $telemetry.batchIntervalSecs nil) }}
+{{- $hasBatchSize := and (hasKey $telemetry "batchSize") (ne $telemetry.batchSize nil) }}
+{{- $hasTelemetryValues := or $telemetry.otlpEndpoint $hasSamplingRate $telemetry.serviceName $telemetry.serviceVersion $telemetry.environment $hasBatchInterval $hasBatchSize }}
   praxis.yaml: |
     {{- with $cfg.upstreamCA.secretName }}
     runtime:
       upstream_ca_file: {{ printf "%s/%s" $cfg.upstreamCA.mountPath ($cfg.upstreamCA.key | default "ca.crt") | quote }}
+    {{- end }}
+    {{- if $telemetry.enabled }}
+    telemetry:
+      {{- if not $hasTelemetryValues }}
+      {}
+      {{- else }}
+      {{- with $telemetry.otlpEndpoint }}
+      otlp_endpoint: {{ . | quote }}
+      {{- end }}
+      {{- if $hasSamplingRate }}
+      sampling_rate: {{ $telemetry.samplingRate }}
+      {{- end }}
+      {{- with $telemetry.serviceName }}
+      service_name: {{ . | quote }}
+      {{- end }}
+      {{- with $telemetry.serviceVersion }}
+      service_version: {{ . | quote }}
+      {{- end }}
+      {{- with $telemetry.environment }}
+      environment: {{ . | quote }}
+      {{- end }}
+      {{- if $hasBatchInterval }}
+      batch_interval_secs: {{ $telemetry.batchIntervalSecs }}
+      {{- end }}
+      {{- if $hasBatchSize }}
+      batch_size: {{ $telemetry.batchSize }}
+      {{- end }}
+      {{- end }}
     {{- end }}
     admin:
       address: {{ include "praxis-gateway.renderedAdminAddress" . | quote }}
@@ -43,6 +76,9 @@ The data of the chart-rendered gateway ConfigMap, also hashed into checksum/conf
     filter_chains:
       - name: main
         filters:
+          {{- if $telemetry.enabled }}
+          - filter: trace_context
+          {{- end }}
           {{- if $provider }}
           {{- if ne (($cfg.peerTrust).mode | default "pin") "spiffe" }}
           - filter: peer_identity_trust

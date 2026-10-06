@@ -33,6 +33,10 @@ spec:
       {{- else if eq $configSource "render" }}
       {{- $_ := set $podAnnotations "checksum/config" (include "praxis-gateway.gatewayConfigData" . | sha256sum) }}
       {{- end }}
+      {{- if (.Values.gatewayConfig.telemetry).enabled }}
+      {{- /* Exporter initialization is process-scoped, so changed settings need a restart. */}}
+      {{- $_ := set $podAnnotations "checksum/telemetry" (toJson .Values.gatewayConfig.telemetry | sha256sum) }}
+      {{- end }}
       {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}

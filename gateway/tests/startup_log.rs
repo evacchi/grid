@@ -34,17 +34,27 @@ mod tests {
     }
 
     /// Start the gateway on `config`, with `serving_config` as `GRID_SERVING_CONFIG` when set.
-    fn spawn(config: PathBuf, serving_config: Option<&str>) -> io::Result<(Child, mpsc::Receiver<String>)> {
+    fn spawn(
+        config: PathBuf,
+        serving_config: Option<&str>,
+        otlp_headers: Option<&str>,
+    ) -> io::Result<(Child, mpsc::Receiver<String>)> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_grid-gateway"));
         command
             .arg("--config")
             .arg(config)
             .env("RUST_LOG", "info")
+            .env_remove("OTEL_EXPORTER_OTLP_PROTOCOL")
+            .env_remove("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         match serving_config {
             Some(path) => command.env("GRID_SERVING_CONFIG", path),
             None => command.env_remove("GRID_SERVING_CONFIG"),
+        };
+        match otlp_headers {
+            Some(headers) => command.env("OTEL_EXPORTER_OTLP_HEADERS", headers),
+            None => command.env_remove("OTEL_EXPORTER_OTLP_HEADERS"),
         };
         let mut child = command.spawn()?;
         let (lines_tx, lines_rx) = mpsc::channel();
@@ -65,7 +75,7 @@ mod tests {
 
     #[test]
     fn startup_emits_a_log_line() -> TestResult {
-        let (mut child, lines) = spawn(write_config("startup-log.yaml")?, None)?;
+        let (mut child, lines) = spawn(write_config("startup-log.yaml")?, None, None)?;
         let mut seen = Vec::new();
         let found = loop {
             match lines.recv_timeout(TIMEOUT) {
@@ -82,7 +92,7 @@ mod tests {
 
     #[test]
     fn fatal_startup_flushes_its_logs() -> TestResult {
-        let (mut child, lines) = spawn(write_config("fatal-log.yaml")?, Some("/nonexistent/serving.json"))?;
+        let (mut child, lines) = spawn(write_config("fatal-log.yaml")?, Some("/nonexistent/serving.json"), None)?;
         // Both streams close on exit, which disconnects the channel.
         let deadline = Instant::now() + TIMEOUT;
         let mut output = Vec::new();
@@ -107,6 +117,61 @@ mod tests {
             output.iter().any(|line| line.contains("/nonexistent/serving.json")),
             "the serving config error was not reported: {output:#?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn server_pipeline_error_is_reported_before_tracing_guard_flush() -> TestResult {
+        let path = write_config("invalid-filter.yaml")?;
+        let yaml = std::fs::read_to_string(&path)?
+            .replace("filter: static_response", "filter: not_registered_for_startup_test");
+        std::fs::write(&path, yaml)?;
+        let (mut child, lines) = spawn(path, None, None)?;
+
+        // Both streams close on exit, which disconnects the channel.
+        let deadline = Instant::now() + TIMEOUT;
+        let mut output = Vec::new();
+        loop {
+            match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(line) => output.push(line),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    child.kill()?;
+                    child.wait()?;
+                    return Err(format!("gateway still running after {TIMEOUT:?}").into());
+                },
+            }
+        }
+        let status = child.wait()?;
+        assert!(!status.success(), "an invalid pipeline filter must fail startup");
+        assert!(
+            output.iter().any(|line| line.contains("fatal error; exiting")),
+            "the server startup error was not logged before the tracing guard dropped: {output:#?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn credentialed_https_grpc_exporter_starts() -> TestResult {
+        let path = write_config("credentialed-https-grpc.yaml")?;
+        let mut yaml = std::fs::read_to_string(&path)?;
+        yaml.push_str("telemetry:\n  otlp_endpoint: https://127.0.0.1:4317\n");
+        std::fs::write(&path, yaml)?;
+
+        let (mut child, lines_rx) = spawn(path, None, Some("Authorization=test-only"))?;
+
+        let deadline = Instant::now() + TIMEOUT;
+        let mut output = Vec::new();
+        let started = loop {
+            match lines_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(line) if line.contains(STARTUP_MESSAGE) => break true,
+                Ok(line) => output.push(line),
+                Err(_) => break false,
+            }
+        };
+        drop(child.kill());
+        child.wait()?;
+        assert!(started, "credentialed HTTPS/gRPC exporter did not start: {output:#?}");
         Ok(())
     }
 }

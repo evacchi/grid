@@ -2085,12 +2085,13 @@ fn consumer_config_map(
     gw_ref: &GatewayRef,
     cc: &ConsumerConfig,
 ) -> Result<ConfigMap, OperatorError> {
-    let config_yaml = consumer_config::generate_consumer_praxis_config(
+    let config_yaml = consumer_config::generate_consumer_praxis_config_with_telemetry(
         overlay,
         &cc.credential_mount_base,
         &cc.cluster_endpoints,
         &cc.tls_cert_mount_path,
         cc.listener_port,
+        cc.telemetry.as_ref(),
     )?;
     Ok(consumer_config::build_consumer_config_map(
         &config_yaml,

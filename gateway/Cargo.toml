@@ -308,10 +308,11 @@ name = "grid-gateway"
 path = "src/main.rs"
 
 [dependencies]
-praxis-proxy = { version = "0.7.3", features = ["spiffe"] }
+praxis-proxy = { version = "0.7.3", features = ["otel", "spiffe"] }
 praxis-proxy-filter = "0.7.3"
 praxis-proxy-core = "0.7.3"
-praxis-ai-filters = { git = "https://github.com/praxis-proxy/ai.git", rev = "17b41771fcd53b22ab5c6f9badede0de9021404c", default-features = false }
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["tls-provider-agnostic"] }
+praxis-ai-filters = { git = "https://github.com/praxis-proxy/ai.git", rev = "17b41771fcd53b22ab5c6f9badede0de9021404c", default-features = false, features = ["opentelemetry"] }
 ai-grid-filters = { path = "ai-grid-filters" }
 tracing = "0.1.44"
 
@@ -322,7 +323,7 @@ rustls = { version = "0.23.45", features = ["ring"] }
 
 # machete can't see these: used as `praxis` / `praxis_core` / `praxis_filter`, not their package names.
 [package.metadata.cargo-machete]
-ignored = ["praxis-proxy", "praxis-proxy-core", "praxis-proxy-filter"]
+ignored = ["opentelemetry-otlp", "praxis-proxy", "praxis-proxy-core", "praxis-proxy-filter"]
 
 [lints]
 workspace = true
