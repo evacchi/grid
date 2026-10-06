@@ -313,10 +313,14 @@ unrelated address.
 | `GRID_SIGNALS_PEER_PORT` | Port dialed on a peer's SWIM host when the peer gossips no signals endpoint. Defaults to `9091` |
 | `GRID_SIGNALS_MAX_PER_PEER` | Concurrent authenticated signals connections one peer site may hold. Defaults to `8` |
 | `GRID_GATEWAY_ADDRESS` | Explicit gateway address override (skips self-discovery) |
+| `GRID_GATEWAY_DISCOVERY_ENABLED` | Whether to discover and advertise a gateway address. Defaults to `true`; set `false` for a consumer-only site |
 | `GRID_GATEWAY_SERVICE_NAME` | Service name for gateway self-discovery (default: `provider-gateway`) |
 | `GRID_GATEWAY_NAMESPACE` | Namespace for gateway Service lookup (default: `grid-system`) |
-| `GRID_GATEWAY_PORT` | Port appended to discovered address (default: `8080`) |
+| `GRID_GATEWAY_PORT` | Optional port override appended to the discovered address. When unset, use the first Service `spec.ports` entry; fall back to `8080` if no usable port exists |
 | `GRID_GATEWAY_DISCOVERY_INTERVAL_MS` | Polling interval for gateway discovery (default: `5000`) |
+
+Gateway port discovery reads only the gateway Service's `spec.ports`; Pod health
+probes and metrics endpoints are not used for this selection.
 
 The signals listener caps handshakes per client source address. Behind a
 LoadBalancer, set `externalTrafficPolicy: Local` on the Service that carries
@@ -878,6 +882,17 @@ runtime via a watch channel.
 **Explicit override:** Set `GRID_GATEWAY_ADDRESS` to skip the self-discovery
 poller entirely.
 
+Set `GRID_GATEWAY_DISCOVERY_ENABLED=false` on a consumer-only site that has no
+local gateway address to advertise. The default is `true`. Disabling discovery
+stops Service lookups and the poller, but an explicit `GRID_GATEWAY_ADDRESS`
+still wins and is advertised.
+
+Discovery uses the first LoadBalancer ingress hostname or IP. The advertised
+port is `GRID_GATEWAY_PORT` when set, otherwise the first Service `spec.ports`
+entry, with `8080` as the fallback if no usable port exists. A ClusterIP or
+NodePort Service supplies no discovered address; use an explicit reachable
+address for those Service types.
+
 ```bash
 # Self-discovery (default): operator discovers from provider-gateway Service
 GRID_GATEWAY_SERVICE_NAME=provider-gateway ./operator
@@ -895,9 +910,10 @@ GRID_GATEWAY_ADDRESS=10.0.0.4:8080 ./operator
 - This address is separate from `GRID_SWIM_BIND_ADDR` — the SWIM gossip endpoint
   and the data-plane gateway address are distinct
 
-The current first-ingress, configured-port discovery contract is appropriate
-for the local MetalLB environment. A production endpoint is represented and
-validated by host, named port, protocol, SNI, address scope, and generation;
+The first-ingress discovery contract uses an explicit port override or the
+first declared Service port. It is appropriate for the local MetalLB environment.
+A production endpoint is represented and validated by host, named port, protocol,
+SNI, address scope, and generation;
 arbitrary or ambiguous advertised strings do not become routable endpoints.
 
 **Probe behavior:** In Mutual mode, the `GridSite` controller performs a bounded
