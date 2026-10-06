@@ -157,3 +157,76 @@ RUST_LOG for the chart's Rust binaries: log.filter when set, else log.level.
 {{- $log := .Values.log | default dict -}}
 {{- $log.filter | default $log.level | default "info" -}}
 {{- end }}
+
+{{/* Service annotations, the platform's merged under the caller's. AWS needs an NLB: the default carries no UDP. */}}
+{{- define "grid-operator.serviceAnnotations" -}}
+{{- $own := .own | default dict -}}
+{{- $platform := dict -}}
+{{- if eq (.root.Values.platform | default "") "aws" -}}
+{{- $platform = dict "service.beta.kubernetes.io/aws-load-balancer-type" "nlb" -}}
+{{- end -}}
+{{- $merged := merge (deepCopy $own) $platform -}}
+{{- if $merged }}
+{{- toYaml $merged }}
+{{- end }}
+{{- end -}}
+
+{{/* `peers` as a list. Spaces or commas, so one `--set` needs no braces. */}}
+{{- define "grid-operator.peerList" -}}
+{{- $raw := .Values.peers | default "" | replace "," " " -}}
+{{- $out := list -}}
+{{- range (splitList " " $raw) -}}
+{{- $p := trim . -}}
+{{- if $p -}}
+{{- $out = append $out $p -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/* `swim.seeds` when set, else each peer at the SWIM port. A peer with a port is taken as given. */}}
+{{- define "grid-operator.swimSeeds" -}}
+{{- if .Values.swim.seeds -}}
+{{- .Values.swim.seeds -}}
+{{- else -}}
+{{- $port := (.Values.swim.service).port | default 7946 -}}
+{{- $seeds := list -}}
+{{- range (include "grid-operator.peerList" . | fromYamlArray) -}}
+{{/* A bare IPv6 address has colons but no port, so bracket it; [addr]:port and host:port are taken as given. */}}
+{{- if or (hasPrefix "[" .) (and (contains ":" .) (not (regexMatch "^[0-9a-fA-F:]+$" .))) -}}
+{{- $seeds = append $seeds . -}}
+{{- else if contains ":" . -}}
+{{- $seeds = append $seeds (printf "[%s]:%v" . $port) -}}
+{{- else -}}
+{{- $seeds = append $seeds (printf "%s:%v" . $port) -}}
+{{- end -}}
+{{- end -}}
+{{- join "," $seeds -}}
+{{- end -}}
+{{- end -}}
+
+{{/* `own` when set, else each peer as a host route. A name yields none: no CIDR to derive. */}}
+{{- define "grid-operator.peerSourceRanges" -}}
+{{- $own := .own | default list -}}
+{{- if $own -}}
+{{- toYaml $own -}}
+{{- else -}}
+{{- $ranges := list -}}
+{{- range (include "grid-operator.peerList" .root | fromYamlArray) -}}
+{{- if regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" . -}}
+{{/* 300.0.0.1 matches the shape; an out-of-range octet would make a CIDR the API rejects,
+     taking the Service with it, so refuse to render instead. */}}
+{{- range $o := splitList "." . -}}
+{{- if gt (int $o) 255 -}}
+{{- fail (printf "peers: %q is not an IPv4 address" $o) -}}
+{{- end -}}
+{{- end -}}
+{{- $ranges = append $ranges (printf "%s/32" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if $ranges -}}
+{{- toYaml $ranges -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+

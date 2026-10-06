@@ -208,12 +208,24 @@ db:
     caConfigMapName: ""
     caConfigMapKey: ca.crt
 
-# -- Sites to invite, keyed by site name: network (default grid) and expiresInSecs. Each
-# run skips sites whose invite Secret exists. The older list of {siteName,
-# gridNetworkRef, expiresInSecs} still renders.
+# -- Sites to invite, keyed by site name: network (default grid), expiresInSecs, and
+# cluster when the ManagedCluster is named something other than the site. Each run skips
+# sites whose invite Secret exists. The older list of {siteName, gridNetworkRef,
+# expiresInSecs} still renders.
 # invites:
 #   site-a:
 #     network: grid
+#     cluster: prod-01
+
+# -- ACM Policy delivering each invited site its token, the CA bundle and the gossip key.
+# The site names come from `invites`, so they are not restated here.
+invitePolicy:
+  # -- Render the policy. Needs ACM on this cluster and the sites imported.
+  enabled: false
+  # -- Namespace on each site that its operator reads the Secrets from.
+  namespace: grid
+  # -- ManagedClusterSet the sites belong to. The binding is named for it.
+  clusterSet: default
 
 # -- The hub's own site identity, issued by the bootstrap Job straight from the grid
 # CA, so the hub never enrolls or needs an invite. It rotates like an enrolled site.

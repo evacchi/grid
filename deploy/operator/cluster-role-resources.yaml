@@ -35,12 +35,13 @@ rules:
   # Read paths:
   #   - Provider gateway LoadBalancer Service (self-discovery of the
   #     external address advertised via SWIM state broadcast)
-  #   - SWIM LoadBalancer Service (advertised SWIM and signals address)
+  #   - SWIM LoadBalancer Service (advertised SWIM address)
+  #   - Signals LoadBalancer Service, when it is rendered separately
   #
   # Only get is required; no write, list, or watch.
   - apiGroups: [""]
     resources: ["services"]
-    resourceNames: ["provider-gateway", "grid-operator-swim"]
+    resourceNames: ["provider-gateway", "grid-operator-swim", "grid-operator-signals"]
     verbs: ["get"]
 
   # ── Events (namespaced) ────────────────────────────────────────────

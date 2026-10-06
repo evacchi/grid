@@ -78,9 +78,10 @@ spec:
             - name: GRID_SWIM_SITE_NAME
               value: {{ . | quote }}
             {{- end }}
-            {{- if .Values.swim.seeds }}
+            {{- $seeds := include "grid-operator.swimSeeds" . }}
+            {{- if $seeds }}
             - name: GRID_SWIM_SEEDS
-              value: {{ .Values.swim.seeds | quote }}
+              value: {{ $seeds | quote }}
             {{- end }}
             {{- if .Values.gateway.address }}
             - name: GRID_GATEWAY_ADDRESS
@@ -120,7 +121,12 @@ spec:
             {{- end }}
             {{- if (.Values.signals).enabled }}
             - name: GRID_SIGNALS_LOCAL_ADDR
-              value: {{ printf "%s-swim.%s.svc:%v" (include "grid-operator.fullname" .) .Release.Namespace .Values.signals.port | quote }}
+              {{- /* Follows whichever Service carries the port: the signals one when rendered, else SWIM. */}}
+              value: {{ printf "%s-%s.%s.svc:%v" (include "grid-operator.fullname" .) (ternary "signals" "swim" .Values.signals.service.enabled) .Release.Namespace .Values.signals.port | quote }}
+            {{- if .Values.signals.service.enabled }}
+            - name: GRID_SIGNALS_SERVICE_NAME
+              value: {{ printf "%s-signals" (include "grid-operator.fullname" .) | quote }}
+            {{- end }}
             {{- with .Values.signals.advertiseAddress }}
             - name: GRID_SIGNALS_ADVERTISE_ADDR
               value: {{ . | quote }}

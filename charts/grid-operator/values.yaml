@@ -180,11 +180,32 @@ swim:
     loadBalancerSourceRanges: []
 
 # -- mTLS signals endpoint, for a GridNetwork with signalTransport poll.
+# -- Cloud the grid runs on. `aws` asks for an NLB, since the default carries no UDP.
+platform: ""
+
+# -- The grid's other sites, separated by spaces or commas. Each becomes a SWIM seed and,
+# if a bare IPv4 address, a host route in both Services. swim.seeds and either Service's
+# loadBalancerSourceRanges override it.
+peers: ""
+
 signals:
-  # -- Serve signals on the SWIM Service. Needs swim.service.enabled and, for a LoadBalancer, mixed UDP and TCP support.
+  # -- Serve this site's signals endpoint for peers to poll.
   enabled: false
-  # -- Signals TCP port on the SWIM Service, gossiped to peers with its LoadBalancer address.
+  # -- Signals TCP port, gossiped to peers with this Service's address.
   port: 9091
+  service:
+    # -- Render the signals Service.
+    enabled: true
+    # -- Service type. Empty follows swim.service.type, so one knob covers both.
+    type: ""
+    # -- Address to request, where the environment assigns them.
+    loadBalancerIP: ""
+    # -- Annotations, an NLB class among them.
+    annotations: {}
+    # -- Source ranges allowed to poll signals. Empty inherits swim.service's.
+    loadBalancerSourceRanges: []
+    # -- Empty keeps Local for a LoadBalancer.
+    externalTrafficPolicy: ""
   # -- Signals endpoint gossiped to peers (ip:port, [ipv6]:port, or dns-name:port). Set it when swim.advertiseAddress is set or the Service is not a LoadBalancer.
   advertiseAddress: ""
 

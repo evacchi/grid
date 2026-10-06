@@ -6,9 +6,10 @@ metadata:
   name: {{ include "grid-operator.fullname" . }}-swim
   labels:
     {{- include "grid-operator.labels" . | nindent 4 }}
-  {{- with .Values.swim.service.annotations }}
+  {{- $ann := include "grid-operator.serviceAnnotations" (dict "root" . "own" .Values.swim.service.annotations) }}
+  {{- if $ann }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- $ann | nindent 4 }}
   {{- end }}
 spec:
   type: {{ .Values.swim.service.type | quote }}
@@ -16,9 +17,10 @@ spec:
   loadBalancerIP: {{ .Values.swim.service.loadBalancerIP | quote }}
   {{- end }}
   {{- if eq .Values.swim.service.type "LoadBalancer" }}
-  {{- with .Values.swim.service.loadBalancerSourceRanges }}
+  {{- $ranges := include "grid-operator.peerSourceRanges" (dict "root" . "own" .Values.swim.service.loadBalancerSourceRanges) }}
+  {{- if $ranges }}
   loadBalancerSourceRanges:
-    {{- toYaml . | nindent 4 }}
+    {{- $ranges | nindent 4 }}
   {{- end }}
   {{- end }}
   {{- if .Values.swim.service.externalTrafficPolicy }}
@@ -35,12 +37,6 @@ spec:
       port: {{ .Values.swim.service.port }}
       targetPort: swim-udp
       protocol: UDP
-    {{- if (.Values.signals).enabled }}
-    - name: signals
-      port: {{ .Values.signals.port }}
-      targetPort: signals
-      protocol: TCP
-    {{- end }}
   selector:
     {{- include "grid-operator.selectorLabels" . | nindent 4 }}
 {{- end }}

@@ -1,0 +1,41 @@
+{{- include "grid-operator.normalize" . }}
+{{- if and (.Values.signals).enabled .Values.signals.service.enabled }}
+{{- /* Its own Service: a mixed UDP and TCP Service is refused outright on AWS. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "grid-operator.fullname" . }}-signals
+  labels:
+    {{- include "grid-operator.labels" . | nindent 4 }}
+  {{- $ann := include "grid-operator.serviceAnnotations" (dict "root" . "own" .Values.signals.service.annotations) }}
+  {{- if $ann }}
+  annotations:
+    {{- $ann | nindent 4 }}
+  {{- end }}
+spec:
+  {{- $type := .Values.signals.service.type | default .Values.swim.service.type }}
+  type: {{ $type | quote }}
+  {{- if and (eq $type "LoadBalancer") .Values.signals.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.signals.service.loadBalancerIP | quote }}
+  {{- end }}
+  {{- if eq $type "LoadBalancer" }}
+  {{- $own := .Values.signals.service.loadBalancerSourceRanges | default .Values.swim.service.loadBalancerSourceRanges }}
+  {{- $ranges := include "grid-operator.peerSourceRanges" (dict "root" . "own" $own) }}
+  {{- if $ranges }}
+  loadBalancerSourceRanges:
+    {{- $ranges | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.signals.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.signals.service.externalTrafficPolicy | quote }}
+  {{- else if eq $type "LoadBalancer" }}
+  externalTrafficPolicy: "Local"
+  {{- end }}
+  ports:
+    - name: signals
+      port: {{ .Values.signals.port }}
+      targetPort: signals
+      protocol: TCP
+  selector:
+    {{- include "grid-operator.selectorLabels" . | nindent 4 }}
+{{- end }}

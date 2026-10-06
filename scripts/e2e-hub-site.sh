@@ -161,11 +161,22 @@ plan_addresses() {
   [[ -n $hub && -n $site ]] || die "no MetalLB pool on the clusters; run: $0 up"
   ENROLL_IP=$(ip_add "$hub" 1)
   HUB_SWIM_IP=$(ip_add "$hub" 2)
+  # Signals have their own Service, so their own address from each pool.
+  HUB_SIG_IP=$(ip_add "$hub" 3)
   SITE_SWIM_IP=$(ip_add "$site" 1)
   SITE_GW_IP=$(ip_add "$site" 2)
+  SITE_SIG_IP=$(ip_add "$site" 3)
   MODEL_IP=$(kubectl --context "$SITE_CTX" -n model get service vcr-inference-site -o jsonpath='{.spec.clusterIP}')
   [[ -n $MODEL_IP ]] || die "no vcr-inference-site Service on the site"
-  log "enrollment $ENROLL_IP, hub SWIM $HUB_SWIM_IP, site SWIM $SITE_SWIM_IP, site gateway $SITE_GW_IP"
+  # Two Services asking MetalLB for one address leaves the loser pending forever,
+  # which surfaces as an unrelated deployment never going ready.
+  local planned
+  planned=$(printf '%s\n' "$ENROLL_IP" "$HUB_SWIM_IP" "$HUB_SIG_IP" \
+    "$SITE_SWIM_IP" "$SITE_SIG_IP" "$SITE_GW_IP")
+  [[ $(printf '%s\n' "$planned" | sort -u | wc -l) -eq 6 ]] \
+    || die "planned addresses are not distinct: $(printf '%s ' $planned)"
+  log "enrollment $ENROLL_IP, hub SWIM $HUB_SWIM_IP, hub signals $HUB_SIG_IP"
+  log "site SWIM $SITE_SWIM_IP, site signals $SITE_SIG_IP, site gateway $SITE_GW_IP"
 }
 
 # helm_on <context> <namespace> <release> <chart> [--set flags...]: the README command
@@ -294,7 +305,8 @@ install_hub() {
   renewal_args grid-operator
   helm_on "$HUB_CTX" "$NS" grid-operator grid-operator "${RA[@]}" \
     --set swim.siteName=hub --set enrollment.enabled=true --set grid.peerTrust="$MODE" \
-    "${IMG[@]}" --set swim.service.loadBalancerIP="$HUB_SWIM_IP" || die "install hub grid-operator"
+    "${IMG[@]}" --set swim.service.loadBalancerIP="$HUB_SWIM_IP" \
+    --set signals.service.loadBalancerIP="$HUB_SIG_IP" || die "install hub grid-operator"
   copy_key "$HUB_CTX" "$ENS" "$HUB_CTX" grid-ca-bundle ca.crt || die "copy the hub CA bundle"
   copy_key "$HUB_CTX" "$ENS" "$HUB_CTX" grid-invite-hub token hub || die "copy the hub invite"
   head -c 32 /dev/urandom | k "$HUB_CTX" create secret generic grid-swim-key --from-file=key=/dev/stdin >/dev/null \
@@ -353,7 +365,8 @@ install_site() {
     --set "swim.siteName=$SITE" --set "swim.seeds=$HUB_SWIM_IP:7946" \
     --set enrollment.enabled=true --set "enrollment.url=https://grid-enrollment.$ENS.svc:$ENROLL_PORT" \
     --set grid.peerTrust="$MODE" \
-    "${IMG[@]}" --set swim.service.loadBalancerIP="$SITE_SWIM_IP" || die "install site grid-operator"
+    "${IMG[@]}" --set swim.service.loadBalancerIP="$SITE_SWIM_IP" \
+    --set signals.service.loadBalancerIP="$SITE_SIG_IP" || die "install site grid-operator"
   enrollment_forward || die "enrollment forward"
   copy_key "$HUB_CTX" "$ENS" "$SITE_CTX" grid-ca-bundle ca.crt || die "copy the site CA bundle"
   copy_key "$HUB_CTX" "$ENS" "$SITE_CTX" "grid-invite-$SITE" token "$SITE" || die "copy the site invite"
@@ -389,7 +402,15 @@ install_grid() {
   install_hub
   install_site
   for ctx in "$HUB_CTX" "$SITE_CTX"; do
-    k "$ctx" rollout status deployment --timeout 5m >/dev/null || die "deployments on $ctx not ready"
+    # Name what is stuck and why. A bare timeout here cost two rounds of diagnosis:
+    # the pod was retrying a forbidden read and the message said only "not ready".
+    k "$ctx" rollout status deployment --timeout 5m >/dev/null && continue
+    k "$ctx" get deploy,pods -o wide >&2 || true
+    for p in $(k "$ctx" get pods -o name 2>/dev/null); do
+      k "$ctx" get "$p" -o jsonpath='{.metadata.name}{"\t"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}' >&2 2>/dev/null || true
+      k "$ctx" logs "$p" --tail=20 >&2 2>/dev/null || true
+    done
+    die "deployments on $ctx not ready"
   done
   pass "hub and site installed with helm, every deployment rolled out"
 }

@@ -161,12 +161,56 @@ try_template "$CHART_DIR" "SWIM LoadBalancer" \
   --set swim.service.loadBalancerIP=10.0.0.1
 SIG_RENDER=$(helm template v-sig "$CHART_DIR" --namespace grid-system --set signals.enabled=true \
   --set swim.service.enabled=true --set swim.service.type=LoadBalancer 2>&1 || true)
-if grep -q 'value: "v-sig-grid-operator-swim.grid-system.svc:9091"' <<<"$SIG_RENDER" \
+if grep -q 'value: "v-sig-grid-operator-signals.grid-system.svc:9091"' <<<"$SIG_RENDER" \
+  && grep -q 'value: "v-sig-grid-operator-signals"' <<<"$SIG_RENDER" \
   && grep -A3 -- '- name: signals' <<<"$SIG_RENDER" | matches 'targetPort: signals'; then
-  pass "signals: TCP port on the SWIM Service and the local gateway address"
+  pass "signals: own TCP Service, named to the operator, with the local gateway address"
 else
   fail "signals: unexpected render: $(grep -E 'SIGNALS|signals|Error' <<<"$SIG_RENDER" | head -3 | tr '\n' ' ')"
 fi
+# Every Service the Deployment is told to read has to be granted. A name the operator
+# resolves but RBAC omits is a 403 it retries forever, so the pod never goes ready and
+# the symptom lands on an unrelated deployment.
+SIG_READS=$(grep -A1 'name: GRID_SIGNALS_SERVICE_NAME' <<<"$SIG_RENDER" | awk '/value:/{print $2}' | tr -d '"')
+SIG_GRANTS=$(yq 'select(.kind == "ClusterRole") | .rules[] | select(.resources[] == "services") | .resourceNames[]' <<<"$SIG_RENDER" 2>/dev/null)
+if [ -n "$SIG_READS" ] && grep -qx "$SIG_READS" <<<"$SIG_GRANTS"; then
+  pass "signals: the Service the Deployment reads is granted in the resources ClusterRole"
+else
+  fail "signals: Deployment reads '$SIG_READS', ClusterRole grants $(tr '\n' ' ' <<<"$SIG_GRANTS")"
+fi
+# Gossip must stay the SWIM Service's only port: a mixed UDP and TCP Service is refused
+# outright by some providers, which then create no load balancer at all.
+SWIM_PORTS=$(helm template v-sp "$CHART_DIR" --namespace grid-system --set signals.enabled=true \
+  --set swim.service.enabled=true --set swim.service.type=LoadBalancer \
+  --show-only templates/service-swim.yaml 2>&1 || true)
+if [ "$(grep -c -- 'protocol: UDP' <<<"$SWIM_PORTS")" = "1" ] \
+  && ! grep -q -- 'protocol: TCP' <<<"$SWIM_PORTS"; then
+  pass "swim: gossip is the only port on the SWIM Service"
+else
+  fail "swim: SWIM Service carries more than gossip: $(grep -E 'protocol|name:' <<<"$SWIM_PORTS" | tr '\n' ' ')"
+fi
+
+# platform=aws asks for an NLB on both Services, since the default carries no UDP.
+AWS_RENDER=$(helm template v-aws "$CHART_DIR" --namespace grid-system --set platform=aws \
+  --set signals.enabled=true --set swim.service.enabled=true --set swim.service.type=LoadBalancer 2>&1 || true)
+if [ "$(grep -c 'aws-load-balancer-type: nlb' <<<"$AWS_RENDER")" = "2" ]; then
+  pass "platform aws: both Services ask for an NLB"
+else
+  fail "platform aws: expected two NLB annotations: $(grep -c 'aws-load-balancer-type' <<<"$AWS_RENDER")"
+fi
+
+# peers feeds the seeds and both Services' source ranges; a name seeds but is no host route.
+PEERS_RENDER=$(helm template v-peers "$CHART_DIR" --namespace grid-system --set signals.enabled=true \
+  --set swim.service.enabled=true --set swim.service.type=LoadBalancer \
+  --set 'peers=10.0.0.1 peer-b.example.com' 2>&1 || true)
+if grep -q 'value: "10.0.0.1:7946,peer-b.example.com:7946"' <<<"$PEERS_RENDER" \
+  && [ "$(grep -c -- '- 10.0.0.1/32' <<<"$PEERS_RENDER")" = "2" ] \
+  && ! grep -q 'peer-b.example.com/32' <<<"$PEERS_RENDER"; then
+  pass "peers: seeds every peer, host routes only the addresses"
+else
+  fail "peers: unexpected render: $(grep -E 'SEEDS|/32' <<<"$PEERS_RENDER" | head -3 | tr '\n' ' ')"
+fi
+
 try_reject_msg "$CHART_DIR" "signals without the SWIM Service" "needs swim.service.enabled" --set signals.enabled=true
 # --reuse-values from a release predating these keys leaves them absent.
 try_template "$CHART_DIR" "absent signals map" --set signals=null

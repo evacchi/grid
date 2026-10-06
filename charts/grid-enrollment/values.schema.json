@@ -492,6 +492,11 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 604800
+              },
+              "cluster": {
+                "type": "string",
+                "description": "ManagedCluster name to target when it differs from the site name.",
+                "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
               }
             }
           }
@@ -519,6 +524,11 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 604800
+              },
+              "cluster": {
+                "type": "string",
+                "description": "ManagedCluster name to target when it differs from the site name.",
+                "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
               }
             }
           }
@@ -599,6 +609,23 @@
         "filter": {
           "type": "string",
           "description": "Full RUST_LOG directive, such as info,enrollment=debug. When set, it replaces level."
+        }
+      }
+    },
+    "invitePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clusterSet": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

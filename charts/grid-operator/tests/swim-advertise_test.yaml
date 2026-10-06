@@ -74,7 +74,7 @@ tests:
             name: GRID_SWIM_ADVERTISE_ADDR
             value: "$(POD_IP):7946"
 
-  - it: operator may get only the gateway and SWIM Services
+  - it: operator may get only the gateway and the Services it advertises
     template: templates/clusterrole-resources.yaml
     set:
       gateway.serviceName: grid-gateway
@@ -84,7 +84,10 @@ tests:
           content:
             apiGroups: [""]
             resources: ["services"]
-            resourceNames: ["grid-gateway", "grid-grid-operator-swim"]
+            resourceNames:
+              - grid-gateway
+              - grid-grid-operator-swim
+              - grid-grid-operator-signals
             verbs: ["get"]
 
   - it: resources ClusterRole is bound in the release namespace
