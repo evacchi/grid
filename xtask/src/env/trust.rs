@@ -444,6 +444,8 @@ fn test_wrong_org_cert(cluster: &str, ctx: &str, port: u16, model: &str, tally: 
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -451,12 +453,144 @@ mod tests {
         assert!(!UNTRUSTED_CA_CN.is_empty(), "wrong CA CN must be non-empty");
     }
 
+    /// Every organization a provider fixture trusts names a cluster in its topology.
+    ///
+    /// A provider used to trust one shared organization, so a fixture could not name a
+    /// site that did not exist. Naming sites is the point of the change, and the cost
+    /// is a list that can go stale: a renamed or removed cluster leaves an entry that
+    /// matches nothing, which shows up as a 403 rather than as a wrong list.
+    ///
+    /// The reverse is deliberately not asserted. A fixture that trusts fewer sites than
+    /// the topology has is tighter than one that trusts all of them, and tightening is
+    /// what naming sites exists to allow.
     #[test]
-    fn wrong_org_is_not_default_org() {
-        assert_ne!(
-            WRONG_ORG,
-            certs::DEFAULT_ORGANIZATION,
-            "WRONG_ORG must differ from DEFAULT_ORGANIZATION"
+    fn provider_fixtures_trust_exactly_their_topology_clusters() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/e2e/topologies");
+        let mut checked = 0_usize;
+        for entry in std::fs::read_dir(&root).unwrap_or_else(|_| std::process::abort()) {
+            let topology = entry.unwrap_or_else(|_| std::process::abort()).path();
+            let forge = topology.join("forge.yaml");
+            if !forge.is_file() {
+                continue;
+            }
+            let clusters = topology_clusters(&forge);
+            if clusters.is_empty() {
+                continue;
+            }
+            for config in provider_configs(&topology.join("configs")) {
+                checked += assert_trusts_only_clusters(&config, &clusters);
+            }
+        }
+        assert_eq!(
+            checked, 10,
+            "every provider fixture must be checked; a different count means one was added without \
+             coverage, or one dropped out of it"
+        );
+    }
+
+    /// Assert one config trusts only clusters, returning whether it had a list to check.
+    fn assert_trusts_only_clusters(config: &Path, clusters: &[String]) -> usize {
+        let text = std::fs::read_to_string(config).unwrap_or_else(|_| std::process::abort());
+        if !text.contains("peer_identity_trust") {
+            return 0;
+        }
+        let trusted = trusted_organizations(&text, config);
+        if trusted.is_empty() {
+            return 0;
+        }
+        for org in &trusted {
+            assert!(
+                clusters.iter().any(|c| c == org),
+                "{}: trusts {org:?}, which is not a cluster in this topology ({clusters:?})",
+                config.display()
+            );
+        }
+        1
+    }
+
+    /// Cluster names a topology declares, empty when it declares none.
+    ///
+    /// The caller skips a topology with no `forge.yaml`. One that exists but cannot be
+    /// read or parsed aborts instead of returning empty, because an empty list would make
+    /// the caller skip it too and lose its fixtures from the check without failing.
+    fn topology_clusters(forge: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(forge).unwrap_or_else(|_| std::process::abort());
+        let doc = serde_yaml::from_str::<serde_yaml::Value>(&text).unwrap_or_else(|_| std::process::abort());
+        doc.get("spec")
+            .and_then(|spec| spec.get("clusters"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .map(|seq| {
+                seq.iter()
+                    .filter_map(|c| c.get("name").and_then(serde_yaml::Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Organizations every `peer_identity_trust` filter in a Praxis config trusts.
+    ///
+    /// `config` names the file in a parse failure, since the caller is iterating many.
+    ///
+    /// Parsed as YAML rather than matched by line, so a quoted value or a trailing
+    /// comment reads as the value a gateway would load rather than as its spelling.
+    fn trusted_organizations(text: &str, config: &Path) -> Vec<String> {
+        let doc: serde_yaml::Value = serde_yaml::from_str(text).unwrap_or_else(|err| {
+            // abort is the house idiom here, so the path goes out before it takes the binary
+            eprintln!("{}: not parseable as YAML: {err}", config.display());
+            std::process::abort();
+        });
+        sequence(doc.get("filter_chains"))
+            .iter()
+            .flat_map(peer_trust_organizations)
+            .collect()
+    }
+
+    /// Organizations one filter chain's `peer_identity_trust` filters trust.
+    fn peer_trust_organizations(chain: &serde_yaml::Value) -> Vec<String> {
+        sequence(chain.get("filters"))
+            .iter()
+            .filter(|filter| filter.get("filter").and_then(serde_yaml::Value::as_str) == Some("peer_identity_trust"))
+            .flat_map(|filter| {
+                sequence(filter.get("trusted_peers"))
+                    .iter()
+                    .filter_map(|peer| peer.get("organization").and_then(serde_yaml::Value::as_str))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// A YAML sequence, empty when the key is absent or another kind.
+    fn sequence(value: Option<&serde_yaml::Value>) -> Vec<serde_yaml::Value> {
+        value
+            .and_then(serde_yaml::Value::as_sequence)
+            .map_or_else(Vec::new, Clone::clone)
+    }
+
+
+    /// Every YAML file under a topology's `configs` directory.
+    fn provider_configs(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(provider_configs(&path));
+            } else if path.extension().is_some_and(|ext| ext == "yaml") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn wrong_org_can_never_be_a_site_name() {
+        assert!(
+            !certs::is_valid_site_name(WRONG_ORG),
+            "WRONG_ORG must not be a valid site name, or it could match a real site's organization"
         );
     }
 

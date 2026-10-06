@@ -175,8 +175,8 @@ const CLIENT_BEARER_TOKEN: &str = "test-token";
 ///
 /// The edge receives one client identity. Each provider receives its own
 /// server identity with a site-specific SNI. All identities are signed by the
-/// same demo CA and use organization `ai-grid`, which is independently checked
-/// by `peer_identity_trust` in the provider pipeline.
+/// same demo CA and name their own site in the organization, which
+/// `peer_identity_trust` checks independently in the provider pipeline.
 pub(crate) fn prepare_provider_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let demo_root = super::demo_root(Path::new("tests/e2e/topologies/grid-glb-demo/forge.yaml"));
     stage_provider_boundary_with_mode_and_external(IngressMode::Global, None, &demo_root)
@@ -783,7 +783,7 @@ pub(crate) fn verify_external_provider_absent() -> Result<String, Box<dyn std::e
 fn stage_gtm_tls() -> Result<(), Box<dyn std::error::Error>> {
     let certs_dir = Path::new(GENERATED_CERTS_DIR);
     let ca = certs::load_or_generate_ca(certs_dir)?;
-    let certificate = ::certs::generate_dns_cert(&ca, "Grid GLB demo ingress", GTM_SERVER_NAME)?;
+    let certificate = ::certs::generate_dns_cert(&ca, "grid-glb-demo-ingress", GTM_SERVER_NAME)?;
     let target = Path::new(GTM_TLS_DIR);
     fs::create_dir_all(target)?;
     fs::write(target.join("ca.crt"), &ca.cert_pem)?;
