@@ -1,7 +1,8 @@
 name: Triggered Integration Test
 
 # ------------------------------------------------------------------------------
-# Maintainer-triggered integration test of Grid main, a pull request, or a branch.
+# Maintainer-triggered integration test of Grid main, a pull request, or a branch,
+# plus a nightly quick GLB run against main.
 #
 # Runs the GLB demo against the tested revision to verify multi-cluster
 # routing, SWIM discovery, mTLS, overlay hot-reload, and provider selection
@@ -29,9 +30,12 @@ on:
         options:
           - quick
           - full
+  schedule:
+    - cron: "0 18 * * *"
+      timezone: America/New_York
 
 concurrency:
-  group: grid-triggered-integration-${{ inputs.pr_number != '' && format('pr-{0}', inputs.pr_number) || inputs.branch != '' && format('branch-{0}', inputs.branch) || 'main' }}-${{ inputs.mode }}
+  group: grid-triggered-integration-${{ inputs.pr_number != '' && format('pr-{0}', inputs.pr_number) || inputs.branch != '' && format('branch-{0}', inputs.branch) || 'main' }}-${{ inputs.mode || 'quick' }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions: {}
