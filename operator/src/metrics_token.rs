@@ -11,7 +11,7 @@ use std::{
 };
 
 use k8s_openapi::api::{
-    authentication::v1::{BoundObjectReference, TokenRequest, TokenRequestSpec},
+    authentication::v1::{TokenRequest, TokenRequestSpec},
     core::v1::ServiceAccount,
 };
 use kube::api::{Api, PostParams};
@@ -32,10 +32,6 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(30);
 const SERVICE_ACCOUNT_ENV: &str = "GRID_METRICS_SCRAPER_SERVICE_ACCOUNT";
 /// The namespace of [`SERVICE_ACCOUNT_ENV`].
 const NAMESPACE_ENV: &str = "GRID_METRICS_SCRAPER_NAMESPACE";
-/// This pod's name and uid, from the downward API, to bind each token to the pod.
-const POD_NAME_ENV: &str = "GRID_POD_NAME";
-/// See [`POD_NAME_ENV`].
-const POD_UID_ENV: &str = "GRID_POD_UID";
 
 /// A minted token and its timeline.
 struct Cached {
@@ -56,6 +52,8 @@ struct State {
     cached: Option<Cached>,
     /// After a failed mint with no usable token, the earliest moment to try again.
     no_mint_before: Option<Instant>,
+    /// The last mint failure logged, so a failure that repeats logs once.
+    failing: Option<String>,
 }
 
 impl State {
@@ -67,6 +65,9 @@ impl State {
     ) -> Result<Zeroizing<String>, MetricsScrapeError> {
         let error = match minted {
             Ok((token, lifetime)) => {
+                if self.failing.take().is_some() {
+                    tracing::info!("metrics scraper token minted again");
+                }
                 *self = Self {
                     cached: Some(Cached {
                         token: token.clone(),
@@ -75,18 +76,30 @@ impl State {
                         retry_at: None,
                     }),
                     no_mint_before: None,
+                    failing: None,
                 };
                 return Ok(token);
             },
             Err(error) => error,
         };
+        self.note_failure(&error, now);
         if let Some(cached) = self.cached.as_mut().filter(|cached| now < cached.expires_at) {
-            tracing::warn!(%error, "metrics scraper token refresh failed; using the held token until it expires");
             cached.retry_at = Some(now + RETRY_BACKOFF);
             return Ok(cached.token.clone());
         }
         self.no_mint_before = Some(now + RETRY_BACKOFF);
         Err(error)
+    }
+
+    /// Log a mint failure at WARN once, until a different one or a success.
+    fn note_failure(&mut self, error: &MetricsScrapeError, now: Instant) {
+        let message = error.to_string();
+        if self.failing.as_deref() == Some(message.as_str()) {
+            return;
+        }
+        let held = self.cached.as_ref().is_some_and(|cached| now < cached.expires_at);
+        tracing::warn!(%error, held, "metrics scraper token mint failed");
+        self.failing = Some(message);
     }
 }
 
@@ -115,16 +128,20 @@ fn token_plan(state: &State, now: Instant) -> Plan {
 /// The current token, shared by every scrape.
 static CACHE: LazyLock<tokio::sync::Mutex<State>> = LazyLock::new(|| tokio::sync::Mutex::new(State::default()));
 
-/// This pod, when the downward API names it, as the object each token is bound to.
-fn bound_pod() -> Option<BoundObjectReference> {
-    let name = std::env::var(POD_NAME_ENV).ok().filter(|v| !v.trim().is_empty())?;
-    let uid = std::env::var(POD_UID_ENV).ok().filter(|v| !v.trim().is_empty())?;
-    Some(BoundObjectReference {
-        api_version: Some("v1".to_owned()),
-        kind: Some("Pod".to_owned()),
-        name: Some(name),
-        uid: Some(uid),
-    })
+/// The `TokenRequest` for a scraper token.
+///
+/// Unbound: the API server binds a token only to a pod running as the token's own
+/// `ServiceAccount`, and the operator runs as another.
+fn token_request() -> TokenRequest {
+    TokenRequest {
+        spec: TokenRequestSpec {
+            // The API server's own audience: an EPP's `TokenReview` checks no other.
+            audiences: Vec::new(),
+            expiration_seconds: i64::try_from(TOKEN_LIFETIME.as_secs()).ok(),
+            bound_object_ref: None,
+        },
+        ..TokenRequest::default()
+    }
 }
 
 /// The configured scraper `ServiceAccount`, read once.
@@ -147,15 +164,7 @@ async fn mint(
     name: &str,
     namespace: &str,
 ) -> Result<(Zeroizing<String>, Duration), MetricsScrapeError> {
-    let request = TokenRequest {
-        spec: TokenRequestSpec {
-            // The API server's own audience: an EPP's `TokenReview` checks no other.
-            audiences: Vec::new(),
-            expiration_seconds: i64::try_from(TOKEN_LIFETIME.as_secs()).ok(),
-            bound_object_ref: bound_pod(),
-        },
-        ..TokenRequest::default()
-    };
+    let request = token_request();
     let api = Api::<ServiceAccount>::namespaced(client.clone(), namespace);
     let issued = tokio::time::timeout(
         MINT_TIMEOUT,
@@ -224,6 +233,7 @@ mod tests {
                 retry_at: retry_in.map(|secs| now + Duration::from_secs(secs)),
             }),
             no_mint_before: None,
+            failing: None,
         }
     }
 
@@ -256,6 +266,7 @@ mod tests {
         let failed = State {
             cached: None,
             no_mint_before: Some(now + Duration::from_secs(30)),
+            failing: None,
         };
         assert_eq!(token_plan(&failed, now), Plan::Fail, "backing off");
         assert_eq!(
@@ -263,6 +274,37 @@ mod tests {
             Plan::Mint,
             "retry once the backoff ends"
         );
+    }
+
+    #[test]
+    fn a_token_is_unbound_for_the_api_servers_audience() {
+        let spec = token_request().spec;
+        assert!(
+            spec.bound_object_ref.is_none(),
+            "a pod running as another ServiceAccount cannot hold the binding"
+        );
+        assert!(spec.audiences.is_empty(), "the API server's own audience");
+        assert_eq!(spec.expiration_seconds, Some(600));
+    }
+
+    #[test]
+    fn a_repeated_mint_failure_logs_once_and_a_success_clears_it() {
+        let now = Instant::now();
+        let mut state = State::default();
+        let fail = || Err(MetricsScrapeError::Credential("refused".to_owned()));
+        assert_eq!(state.record(fail(), now).map(drop).ok(), None);
+        assert!(
+            state
+                .failing
+                .as_deref()
+                .is_some_and(|logged| logged.contains("refused"))
+        );
+        let logged = state.failing.clone();
+        assert_eq!(state.record(fail(), now).map(drop).ok(), None);
+        assert_eq!(state.failing, logged, "the same failure is not logged again");
+        let token = state.record(Ok((Zeroizing::new("t".to_owned()), TOKEN_LIFETIME)), now);
+        assert_eq!(token.as_deref().map(String::as_str).ok(), Some("t"));
+        assert!(state.failing.is_none());
     }
 
     #[test]

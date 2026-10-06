@@ -748,8 +748,10 @@ Whoever runs the EPP receives the token, and it is valid against the API server,
 the operator never sends its own token. The grid-operator chart creates a scraper
 ServiceAccount allowed only `get` on the nonResourceURL `/metrics`
 (`rbac.metricsScraper`, default `true`), and the operator mints a 10-minute token for it
-with the TokenRequest API, bound to the operator Pod, reusing it until two thirds of its
-lifetime has passed (about 400 seconds). The token is never logged.
+with the TokenRequest API, reusing it until two thirds of its lifetime has passed (about
+400 seconds). The token is not bound to a Pod: the API server binds a token only to a Pod
+running as the token's own ServiceAccount, and the operator runs as another. The token is
+never logged. A failed mint logs at WARN when the error changes.
 
 A credential goes only to a host proven by the CA in `spec.tls` or the
 `metricsConfig.tls` override: with `auth` set, an `https://` endpoint without
