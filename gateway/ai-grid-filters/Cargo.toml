@@ -25,8 +25,15 @@ http = "1"
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 metrics = "0.24.6"
 zeroize = "1.9.0"
+serde_json = { version = "1", features = ["raw_value"] }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+lru = "0.18"
+foldhash = "0.2"
+bytes = "1"
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
+dhat = "0.3"
 # The flow tests bind a mock TLS peer to drive the real scrape path.
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "io-util", "time"] }
 tokio-rustls = "0.26"

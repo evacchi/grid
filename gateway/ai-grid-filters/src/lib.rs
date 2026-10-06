@@ -10,6 +10,8 @@ mod descriptor;
 #[cfg(test)]
 mod flow;
 mod metadata;
+mod pin;
+mod prefix;
 mod route;
 mod serving;
 mod snapshot;
@@ -24,8 +26,19 @@ pub use control::ReloadOutcome;
 pub use descriptor::{AdmissionState, CandidateConfig, CapabilityKind, RouteCandidate};
 pub use metadata::{CandidateCredential, CredentialRef};
 use praxis_filter::{FilterError, FilterFactory, FilterRegistry, HttpFilter};
+pub use prefix::{AffinitySettings, PrefixAffinity};
 pub use serving::{GridRuntime, GridServingConfig, PeerServingConfig, load_serving_config, spawn_grid_routing};
 pub use snapshot::RouteSnapshot;
+
+/// The number of prefix keys `body` yields for a request to `path`, for the
+/// peak-memory test; not an API.
+#[doc(hidden)]
+#[must_use]
+pub fn prefix_key_count(path: &str, body: &[u8]) -> usize {
+    prefix::Api::from_path(path)
+        .and_then(|api| prefix::prefix_keys(api, body))
+        .map_or(0, |keys| keys.as_slice().len())
+}
 
 /// Register `grid_site_route` into `registry` over a shared snapshot the gateway
 /// owns and its refresh loop swaps.
@@ -41,9 +54,10 @@ pub use snapshot::RouteSnapshot;
 pub fn register_grid_filters(
     registry: &mut FilterRegistry,
     snapshot: Arc<ArcSwap<RouteSnapshot>>,
+    affinity: Arc<PrefixAffinity>,
 ) -> Result<(), FilterError> {
     let factory = move |config: &serde_yaml::Value| -> Result<Box<dyn HttpFilter>, FilterError> {
-        route::GridSiteRouteFilter::from_config(config, Arc::clone(&snapshot))
+        route::GridSiteRouteFilter::from_config(config, Arc::clone(&snapshot), Arc::clone(&affinity))
     };
     registry.register("grid_site_route", FilterFactory::Http(Arc::new(factory)))
 }
