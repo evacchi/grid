@@ -1320,6 +1320,19 @@ CR_EOF
   echo ""
   echo "=== Praxis Gateway Kind lifecycle (chart wiring, not runtime) ==="
 
+  if MISSING_OUT=$(helm install test-gateway-missing "$GW_DIR" \
+    --namespace grid-system \
+    --kube-context "$KCTX" \
+    --set config.existingConfigMap=missing-gateway-config \
+    --set nameOverride=test-gateway-missing 2>&1); then
+    fail "kind: BYO mode accepts a missing ConfigMap"
+    helm uninstall test-gateway-missing --namespace grid-system --kube-context "$KCTX" >/dev/null 2>&1 || true
+  elif echo "$MISSING_OUT" | matches -F 'ConfigMap "missing-gateway-config" not found in namespace "grid-system"'; then
+    pass "kind: BYO mode fails when ConfigMap is missing"
+  else
+    fail "kind: BYO mode failed without the missing ConfigMap error: $MISSING_OUT"
+  fi
+
   kubectl --context "$KCTX" -n grid-system create configmap test-gateway-config \
     --from-literal=praxis.yaml='admin: {address: "0.0.0.0:9901"}' 2>/dev/null || true
 
@@ -1758,11 +1771,25 @@ echo "======================================================================"
 
 # Argo CD renders with helm template, no cluster access, on every sync.
 echo ""
-echo "=== No cluster lookups or render-varying functions ==="
+echo "=== No manifest lookups or render-varying functions ==="
 NONDET='\b(lookup|randAlphaNum|randAlpha|randNumeric|randAscii|randBytes|randInt|shuffle|uuidv4|now|htpasswd|bcrypt|encryptAES|genCA|genPrivateKey|genSelfSignedCert|genSignedCert)\b|\.Release\.Revision'
 for chart in charts/*/; do
   # A YAML # comment still executes its template actions, so only template comments are skipped.
   hits=$(grep -rnE "$NONDET" "$chart/templates" | grep -vE '^[^:]+:[0-9]+:\s*(#[^{]*$|\{\{-? */\*)' || true)
+  # The BYO preflight only refuses live installs; it supplies no manifest values.
+  # Allow its two exact calls. Other lookups and random/time functions stay banned.
+  hits=$(awk '
+    {
+      code = $0
+      sub(/^[^:]+:[0-9]+:/, "", code)
+      if ($0 ~ /^charts\/praxis-gateway\/+templates\/_helpers\.tpl:[0-9]+:/ &&
+          (code == "{{- if not (lookup \"v1\" \"ConfigMap\" .Release.Namespace .Values.config.existingConfigMap) }}" ||
+           code == "{{- if lookup \"v1\" \"Namespace\" \"\" \"kube-system\" }}")) {
+        next
+      }
+      if (length($0)) print
+    }
+  ' <<<"$hits")
   if [ -z "$hits" ]; then
     pass "deterministic functions only: $chart"
   else

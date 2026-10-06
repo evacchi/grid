@@ -200,6 +200,18 @@ Validate required config ConfigMap name.
 {{- include "praxis-gateway.validateBackends" . }}
 {{- else if not .Values.config.existingConfigMap }}
 {{- include "praxis-gateway.validateInlineConfig" . }}
+{{- else }}
+{{- /*
+In a live cluster, require the BYO ConfigMap; skip this for offline rendering.
+Read the named ConfigMap first; an existing one needs no cluster-wide read.
+When it is missing, read Namespace kube-system to detect a live cluster.
+Offline helm template skips both reads; denied reads fail with the API error.
+*/}}
+{{- if not (lookup "v1" "ConfigMap" .Release.Namespace .Values.config.existingConfigMap) }}
+{{- if lookup "v1" "Namespace" "" "kube-system" }}
+{{- fail (printf "ConfigMap %q not found in namespace %q. Create it before installing praxis-gateway." .Values.config.existingConfigMap .Release.Namespace) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 

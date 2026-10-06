@@ -121,6 +121,19 @@ helm upgrade --install praxis-gateway charts/praxis-gateway \
   --namespace praxis --set config.existingConfigMap=praxis-config
 ```
 
+With `config.existingConfigMap` set and `gatewayConfig.render: false`, a live
+Helm install or upgrade looks up that ConfigMap in the release namespace. If
+it is missing, the chart looks up the `kube-system` Namespace to detect a live
+cluster and then fails before creating the Deployment. Offline `helm template`
+skips this check. Inline defaults still work without an existing ConfigMap.
+Any named ConfigMap must already exist, including one created by the operator.
+
+The Helm client's credentials need `get` access to the named ConfigMap. When
+it is missing, they also need `get` access to Namespace `kube-system`. A denied
+lookup fails with the API permission error rather than the chart's missing
+ConfigMap message. This check runs during rendering; it does not monitor the
+ConfigMap after installation.
+
 Set `config.key` when the configuration lives under another key. The chart
 does not manage this ConfigMap, so editing it does not restart the pods. The
 default Praxis AI image watches its configuration file and reloads routes and
