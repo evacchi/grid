@@ -163,13 +163,13 @@ NaN and infinite samples are discarded. Ratio values received through remote
 state are clamped before scoring. A local scrape failure may reuse the last
 successful sample while it remains within `staleMetricsSeconds`.
 
-A provider with no live metrics and no configured metrics TLS currently falls
+A provider with no live metrics and no effective metrics TLS currently falls
 back to neutral signal values (0.5 for ratio signals, `healthy = true`). This
 compatibility behavior means a provider with missing telemetry can score
 competitively with a provider under real pressure. For a provider configured
-with `metricsConfig.tls`, a failed scrape can reuse a successful sample only
-within `staleMetricsSeconds`; after that, AGN marks the provider unhealthy so
-it is excluded from routing. Production deployments using `queueDepth` or
+with `spec.tls` or a `metricsConfig.tls` override, a failed scrape can reuse a
+successful sample only within `staleMetricsSeconds`; after that, AGN marks the
+provider unhealthy so it is excluded from routing. Production deployments using `queueDepth` or
 `kvCachePressure` should ensure every competing provider exposes fresh,
 comparable telemetry for the selected signal. `noMetrics` does not require a
 metrics endpoint.

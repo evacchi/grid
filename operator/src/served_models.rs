@@ -403,11 +403,12 @@ async fn openai_source(
         Err(e) => return Err(PollError::Credential(e.to_string())),
     };
 
-    let tls = endpoint_tls::resolve_tls_config(openai.tls.as_ref(), Some(client), name)
+    let ep_tls = openai.tls.as_ref().or(provider.spec.tls.as_ref());
+    let client_tls = endpoint_tls::resolve_tls_config(ep_tls, Some(client), name)
         .await
         .map_err(|(_, message)| PollError::Tls(message))?;
 
-    Ok(OpenAiModels::new(&url, token.as_ref(), tls.as_ref(), timeout)?)
+    Ok(OpenAiModels::new(&url, token.as_ref(), client_tls.as_ref(), timeout)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +555,111 @@ mod tests {
         assert_eq!(url("http://h/", "/v1/models"), "http://h/v1/models", "both slashes");
         assert_eq!(url("http://h", "v1/models"), "http://h/v1/models", "no slashes");
         assert_eq!(url("http://h/api", "/v1/models"), "http://h/api/v1/models", "base path");
+    }
+
+    /// Build an OpenAI-compatible model-list response.
+    fn model_list_response(models: &[&str]) -> Vec<u8> {
+        let body = serde_json::json!({
+            "data": models.iter().map(|model| serde_json::json!({"id": model})).collect::<Vec<_>>()
+        })
+        .to_string();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// Start a TLS model-list endpoint signed by `ca`.
+    async fn tls_model_discovery_endpoint(ca: &certs::CaCert, models: &[&str]) -> String {
+        let server_cert =
+            certs::generate_dns_cert(ca, "model-server", "localhost").unwrap_or_else(|_| std::process::abort());
+        crate::resources::test_doubles::start_tls_http_server(
+            &server_cert.cert_pem,
+            &server_cert.key_pem,
+            model_list_response(models),
+        )
+        .await
+    }
+
+    fn openai_source(
+        endpoint: Option<&str>,
+        tls: Option<crate::crd::inference_provider::EndpointTlsConfig>,
+    ) -> OpenAiModelsSource {
+        OpenAiModelsSource {
+            endpoint: endpoint.map(str::to_owned),
+            path: "/v1/models".to_owned(),
+            tls,
+        }
+    }
+
+    #[tokio::test]
+    async fn model_discovery_inherits_shared_tls() {
+        let ca = certs::generate_ca("shared-discovery-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_model_discovery_endpoint(&ca, &["model-a", "model-b"]).await;
+        let client =
+            crate::resources::test_doubles::mock_kube_client_with_secrets(std::collections::HashMap::from([(
+                "shared-ca",
+                crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+            )]));
+        let mut provider = test_provider("provider-a", None);
+        provider.spec.endpoint = endpoint;
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("shared-ca"));
+
+        let models = query_openai(&provider, &openai_source(None, None), &client, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|_| std::process::abort())
+            .into_names();
+
+        assert_eq!(models, vec!["model-a", "model-b"]);
+    }
+
+    #[tokio::test]
+    async fn model_discovery_override_takes_precedence_over_shared_tls() {
+        let ca = certs::generate_ca("override-discovery-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_model_discovery_endpoint(&ca, &["model-a"]).await;
+        let client =
+            crate::resources::test_doubles::mock_kube_client_with_secrets(std::collections::HashMap::from([(
+                "override-ca",
+                crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+            )]));
+        let mut provider = test_provider("provider-a", None);
+        provider.spec.endpoint = "https://unused.invalid".to_owned();
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let models = query_openai(
+            &provider,
+            &openai_source(
+                Some(&endpoint),
+                Some(crate::resources::test_doubles::endpoint_tls_for_ca("override-ca")),
+            ),
+            &client,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_or_else(|_| std::process::abort())
+        .into_names();
+
+        assert_eq!(
+            models,
+            vec!["model-a"],
+            "openai.tls should override shared provider TLS"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_discovery_shared_tls_resolution_failure_is_reported() {
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(std::collections::HashMap::new());
+        let mut provider = test_provider("provider-a", None);
+        provider.spec.endpoint = "https://localhost:8443".to_owned();
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let result = query_openai(&provider, &openai_source(None, None), &client, Duration::from_secs(5)).await;
+
+        assert!(
+            matches!(result, Err(PollError::Tls(_))),
+            "invalid shared TLS material must fail the poll"
+        );
     }
 
     // -----------------------------------------------------------------------

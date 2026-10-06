@@ -107,7 +107,6 @@ static SWIM_PENDING_DROPS: LazyLock<IntCounter> = LazyLock::new(|| {
     .unwrap_or_else(|_| std::process::abort())
 });
 
-
 // ---------------------------------------------------------------------------
 // Peer polling
 //

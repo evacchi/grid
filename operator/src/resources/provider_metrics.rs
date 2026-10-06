@@ -140,12 +140,13 @@ async fn scrape_provider_signals(
     provider: &InferenceProvider,
     client: Option<&kube::Client>,
 ) -> Option<(String, Vec<crate::signals::Observation>)> {
-    let mc = provider.spec.metrics_config.as_ref()?;
     let (identity, url, wanted) = signal_scrape_plan(provider)?;
-    let tls_config = match resolve_tls_config(mc.tls.as_ref(), client, identity).await {
+    let mc = provider.spec.metrics_config.as_ref()?;
+    let tls_settings = mc.tls.as_ref().or(provider.spec.tls.as_ref());
+    let tls_config = match resolve_tls_config(tls_settings, client, identity).await {
         Ok(cfg) => cfg,
         Err((_reason, e)) => {
-            if mc.tls.is_some() {
+            if tls_settings.is_some() {
                 tracing::warn!(provider = identity, error = %e, "signals: provider metrics TLS unavailable; not scraping in plaintext");
             }
             return None;
@@ -311,11 +312,11 @@ pub(crate) fn parse_metrics_timeout(s: &str) -> Duration {
 /// not present in the returned map.  Scrape failures are logged at `warn`
 /// level unless a cached sample is used.
 ///
-/// When `metricsConfig.tls` is configured, the TLS material is resolved from
-/// Kubernetes Secrets via `client` and used for server verification (and
-/// optional mTLS client authentication).  TLS resolution failures are
-/// fail-closed: the scrape is skipped and the provider falls back to stale
-/// cache or neutral scoring.
+/// TLS material is resolved from `metricsConfig.tls` when set, otherwise from
+/// `spec.tls` when set. It is read from Kubernetes Secrets via `client` and
+/// used for server verification (and optional mTLS client authentication).
+/// TLS resolution failures are fail-closed: the scrape is skipped and the
+/// provider falls back to stale cache or neutral scoring.
 ///
 /// # Stale metrics grace period
 ///
@@ -420,6 +421,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
         let url = metrics_url(base, &mc.path);
         let timeout = parse_metrics_timeout(&mc.timeout);
         let names = metric_names_from_config(&mc.signal_names, mc.pool_name.as_deref(), mc.queue_capacity);
+        let tls_settings = mc.tls.as_ref().or(provider.spec.tls.as_ref());
 
         if refresh_interval > Duration::ZERO
             && let Some(cached) = cache_snapshot.get(identity)
@@ -430,7 +432,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
             continue;
         }
 
-        let tls_config = match resolve_tls_config(mc.tls.as_ref(), client, identity).await {
+        let tls_config = match resolve_tls_config(tls_settings, client, identity).await {
             Ok(cfg) => cfg,
             Err((_reason, e)) => {
                 let used_cache = try_cached_metrics(
@@ -448,7 +450,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
                         "metrics TLS resolution failed; using cached sample within stale_metrics_seconds grace period"
                     );
                 } else {
-                    if mc.tls.is_some() {
+                    if tls_settings.is_some() {
                         tracing::warn!(
                             provider = identity,
                             error = %e,
@@ -509,7 +511,7 @@ pub(crate) async fn collect_provider_metrics_with_refresh_interval(
                         "metrics scrape failed; using cached sample within stale_metrics_seconds grace period"
                     );
                 } else {
-                    if mc.tls.is_some() {
+                    if tls_settings.is_some() {
                         tracing::warn!(
                             provider = identity,
                             url = %url,
@@ -939,6 +941,126 @@ mod tests {
             result.metrics.is_empty(),
             "provider without metricsConfig must not appear in metrics map"
         );
+    }
+
+    /// Start a TLS metrics endpoint whose server identity is signed by `ca`.
+    async fn tls_metrics_endpoint(ca: &certs::CaCert, metrics: &str) -> String {
+        let server_cert =
+            certs::generate_dns_cert(ca, "metrics-server", "localhost").unwrap_or_else(|_| std::process::abort());
+        let response = ok_response(metrics);
+        crate::resources::test_doubles::start_tls_http_server(&server_cert.cert_pem, &server_cert.key_pem, response)
+            .await
+    }
+
+    #[tokio::test]
+    async fn metrics_scrape_inherits_shared_tls() {
+        let ca = certs::generate_ca("shared-metrics-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_metrics_endpoint(&ca, "queue_depth 0.25\n").await;
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::from([(
+            "shared-ca",
+            crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+        )]));
+        let mut provider = provider_fixture("prov-a", &endpoint, Some(mc_with_queue("queue_depth")));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("shared-ca"));
+
+        let result = collect_provider_metrics("net", &[provider], &empty_cache(), Instant::now(), Some(&client)).await;
+        let metrics = result.metrics.get("prov-a").unwrap_or_else(|| std::process::abort());
+
+        assert!(
+            (metrics.queue_depth - 0.25).abs() < f64::EPSILON,
+            "shared CA should enable the TLS metrics scrape"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_override_takes_precedence_over_shared_tls() {
+        let ca = certs::generate_ca("override-metrics-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_metrics_endpoint(&ca, "queue_depth 0.75\n").await;
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::from([(
+            "override-ca",
+            crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+        )]));
+        let mut metrics_config = mc_with_queue("queue_depth");
+        metrics_config.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("override-ca"));
+        let mut provider = provider_fixture("prov-a", &endpoint, Some(metrics_config));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let result = collect_provider_metrics("net", &[provider], &empty_cache(), Instant::now(), Some(&client)).await;
+        let metrics = result.metrics.get("prov-a").unwrap_or_else(|| std::process::abort());
+
+        assert!(
+            (metrics.queue_depth - 0.75).abs() < f64::EPSILON,
+            "metricsConfig.tls should override shared TLS"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_shared_tls_resolution_failure_marks_provider_unhealthy() {
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::new());
+        let mut provider = provider_fixture("prov-a", "https://localhost:1", Some(mc_with_queue("queue_depth")));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let result = collect_provider_metrics("net", &[provider], &empty_cache(), Instant::now(), Some(&client)).await;
+        let metrics = result.metrics.get("prov-a").unwrap_or_else(|| std::process::abort());
+
+        assert!(!metrics.healthy, "invalid shared TLS material must fail closed");
+    }
+
+    #[tokio::test]
+    async fn signal_scrape_inherits_shared_tls() {
+        let ca = certs::generate_ca("shared-signals-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_metrics_endpoint(&ca, "queue_depth 0.25\n").await;
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::from([(
+            "shared-ca",
+            crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+        )]));
+        let mut provider = provider_fixture("prov-a", &endpoint, Some(mc_with_queue("queue_depth")));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("shared-ca"));
+
+        let signals = collect_provider_signals("net", &[provider], Some(&client)).await;
+        let observations = signals.get("prov-a").unwrap_or_else(|| std::process::abort());
+
+        assert!(
+            observations
+                .iter()
+                .any(|observation| observation.metric == "queue_depth"),
+            "shared CA should enable the TLS signal scrape"
+        );
+    }
+
+    #[tokio::test]
+    async fn signal_scrape_override_takes_precedence_over_shared_tls() {
+        let ca = certs::generate_ca("override-signals-ca").unwrap_or_else(|_| std::process::abort());
+        let endpoint = tls_metrics_endpoint(&ca, "queue_depth 0.75\n").await;
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::from([(
+            "override-ca",
+            crate::resources::test_doubles::secret_with_key("ca.crt", ca.cert_pem.as_bytes()),
+        )]));
+        let mut metrics_config = mc_with_queue("queue_depth");
+        metrics_config.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("override-ca"));
+        let mut provider = provider_fixture("prov-a", &endpoint, Some(metrics_config));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let signals = collect_provider_signals("net", &[provider], Some(&client)).await;
+        let observations = signals.get("prov-a").unwrap_or_else(|| std::process::abort());
+
+        assert!(
+            observations
+                .iter()
+                .any(|observation| observation.metric == "queue_depth"),
+            "metricsConfig.tls should override shared TLS"
+        );
+    }
+
+    #[tokio::test]
+    async fn signal_scrape_shared_tls_resolution_failure_skips_provider() {
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::new());
+        let mut provider = provider_fixture("prov-a", "https://localhost:1", Some(mc_with_queue("queue_depth")));
+        provider.spec.tls = Some(crate::resources::test_doubles::endpoint_tls_for_ca("missing-shared-ca"));
+
+        let signals = collect_provider_signals("net", &[provider], Some(&client)).await;
+
+        assert!(signals.is_empty(), "invalid shared TLS material must skip the scrape");
     }
 
     #[tokio::test]

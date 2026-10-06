@@ -924,8 +924,8 @@ the current scrape fails but the cached sample is no older than
 scoring.
 
 After the grace period expires, plaintext metrics failures use the neutral
-compatibility behavior. When `metricsConfig.tls` is configured, a TLS
-resolution or scrape failure with no unexpired successful sample instead
+compatibility behavior. When `spec.tls` or a `metricsConfig.tls` override is
+configured, a TLS resolution or scrape failure with no unexpired successful sample instead
 marks the provider unhealthy, excluding it from routing. The cache is
 per-operator-process; restarting the operator clears all cached samples.
 

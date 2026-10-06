@@ -87,3 +87,105 @@ pub(crate) fn config_map_with_key(key: &str, value: &str) -> k8s_openapi::api::c
         ..Default::default()
     }
 }
+
+/// Build an endpoint TLS config that trusts the CA in `Secret/{secret_name}`.
+pub(crate) fn endpoint_tls_for_ca(secret_name: &str) -> crate::crd::inference_provider::EndpointTlsConfig {
+    crate::crd::inference_provider::EndpointTlsConfig {
+        ca_secret_ref: Some(crate::crd::grid_network::SecretRef {
+            name: secret_name.to_owned(),
+            namespace: "default".to_owned(),
+            key: None,
+        }),
+        ca_config_map_ref: None,
+        client_certificate_secret_ref: None,
+    }
+}
+
+/// Start a one-shot HTTPS endpoint and return its localhost URL.
+///
+/// The endpoint consumes one HTTP request and writes `response` as a raw HTTP
+/// response. Its server certificate must be valid for `localhost`.
+#[cfg(not(feature = "fips"))]
+#[expect(clippy::too_many_lines, reason = "TLS test server setup")]
+pub(crate) async fn start_tls_http_server(server_cert_pem: &str, server_key_pem: &str, response: Vec<u8>) -> String {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let server_certs = CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|_| std::process::abort());
+    let server_key = PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes()).unwrap_or_else(|_| std::process::abort());
+    let server_config =
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap_or_else(|_| std::process::abort())
+            .with_no_client_auth()
+            .with_single_cert(server_certs, server_key)
+            .unwrap_or_else(|_| std::process::abort());
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| std::process::abort());
+    let port = listener.local_addr().unwrap_or_else(|_| std::process::abort()).port();
+
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await
+            && let Ok(tls_stream) = acceptor.accept(stream).await
+        {
+            let (mut reader, mut writer) = tokio::io::split(tls_stream);
+            let mut buffer = [0_u8; 4096];
+            drop(reader.read(&mut buffer).await);
+            drop(writer.write_all(&response).await);
+        }
+    });
+
+    format!("https://localhost:{port}")
+}
+
+/// OpenSSL implementation of [`start_tls_http_server`] for FIPS tests.
+#[cfg(feature = "fips")]
+#[expect(clippy::too_many_lines, reason = "OpenSSL test server setup")]
+pub(crate) async fn start_tls_http_server(server_cert_pem: &str, server_key_pem: &str, response: Vec<u8>) -> String {
+    use openssl::{
+        pkey::PKey,
+        ssl::{Ssl, SslAcceptor, SslMethod},
+        x509::X509,
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let certificate = X509::from_pem(server_cert_pem.as_bytes()).unwrap_or_else(|_| std::process::abort());
+    let private_key = PKey::private_key_from_pem(server_key_pem.as_bytes()).unwrap_or_else(|_| std::process::abort());
+    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap_or_else(|_| std::process::abort());
+    builder
+        .set_certificate(&certificate)
+        .unwrap_or_else(|_| std::process::abort());
+    builder
+        .set_private_key(&private_key)
+        .unwrap_or_else(|_| std::process::abort());
+    builder.check_private_key().unwrap_or_else(|_| std::process::abort());
+    let acceptor = builder.build();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|_| std::process::abort());
+    let port = listener.local_addr().unwrap_or_else(|_| std::process::abort()).port();
+
+    tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(ssl) = Ssl::new(acceptor.context()) else {
+            return;
+        };
+        let Ok(mut tls_stream) = tokio_openssl::SslStream::new(ssl, stream) else {
+            return;
+        };
+        if std::pin::Pin::new(&mut tls_stream).accept().await.is_ok() {
+            let (mut reader, mut writer) = tokio::io::split(tls_stream);
+            let mut buffer = [0_u8; 4096];
+            drop(reader.read(&mut buffer).await);
+            drop(writer.write_all(&response).await);
+        }
+    });
+
+    format!("https://localhost:{port}")
+}

@@ -136,7 +136,12 @@ inferenceProviders:
 
 Required fields: `name`, `gridNetworkRef`, `providerKind`,
 `backendKind`, `endpoint`. Optional: `models`, `auth`, `healthCheck`,
-`metricsConfig`, `cost`, `accessPolicy`.
+`tls`, `metricsConfig`, `cost`, `accessPolicy`.
+
+Set `spec.tls` to share the provider CA bundle and optional client certificate
+across health checks, metrics scraping, and model discovery. Feature-specific
+TLS settings override it when an endpoint needs different trust material or a
+different client identity; see [TLS and mTLS](architecture/crds.md#tls-and-mtls).
 
 ### 4. Update provider Praxis config template
 
