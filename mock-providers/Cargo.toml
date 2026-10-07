@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+version.workspace = true
 axum = { workspace = true }
 clap = { workspace = true }
 http = { workspace = true }
