@@ -1454,6 +1454,29 @@ mod tests {
         assert_eq!(invalid_reason.as_deref(), Some("HealthCheckAuthValueInvalid"));
     }
 
+    /// A Secret that vanishes between the pre-flight accessibility check and
+    /// the probe-side resolve maps to `HealthCheckAuthCredentialUnavailable`,
+    /// distinct from the pre-flight `CredentialSecretMissing` reason.
+    #[tokio::test]
+    async fn health_probe_authorization_maps_missing_secret_to_unavailable() {
+        let client = mock_kube_client_for_health_tls("net-1", HashMap::new());
+        let plan = CredentialPlan::Bearer(credentials::BearerTokenRef {
+            secret_name: "provider-token".to_owned(),
+            namespace: "default".to_owned(),
+            key: "token".to_owned(),
+        });
+        let provider_uri = test_uri("https://inference.example.com");
+        let probe_uri = test_uri("https://inference.example.com/health");
+        let result = health_probe_authorization(&provider_uri, &probe_uri, &client, &plan).await;
+        let Err(HealthProbeError::Status(reason)) = result else {
+            std::process::abort();
+        };
+        assert_eq!(
+            reason, "HealthCheckAuthCredentialUnavailable",
+            "a Secret missing at probe time must map to the probe-side status reason"
+        );
+    }
+
     #[tokio::test]
     async fn manually_managed_auth_keeps_health_probe_anonymous() {
         let (phase, authorization, reason) = Box::pin(run_protected_health_probe(ProbeAuthFixture::Manual, None)).await;
