@@ -63,6 +63,24 @@ const MAX_RELAY_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 #[cfg(test)]
 const NO_SKEW_NOW_MS: i64 = 1_000_000;
 
+/// How two lines of one metric observed at the same instant under different labels are
+/// combined into the one value the series keeps for that instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Combine {
+    /// The larger: right for a per-unit reading whose worst unit matters.
+    Max,
+    /// The total: right for a count split across partitions.
+    Sum,
+}
+
+/// Which combination a metric takes, by name.
+pub type CombinePolicy = fn(&str) -> Combine;
+
+/// Every metric takes the larger value, which never hides work.
+fn combine_max(_metric: &str) -> Combine {
+    Combine::Max
+}
+
 /// One observation of a series.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
@@ -77,15 +95,31 @@ pub struct Sample {
 struct Series {
     /// Samples in timestamp order.
     samples: Vec<Sample>,
+    /// The label sets already folded into the newest sample, so a republished line is
+    /// not combined twice while a line under other labels is.
+    newest_labels: Vec<u64>,
 }
 
 impl Series {
-    /// Append `sample` if it is newer than what is held, then evict past
-    /// `window`.
-    fn push(&mut self, sample: Sample, window: Duration) {
-        if self.samples.last().is_some_and(|last| sample.at_ms <= last.at_ms) {
-            return;
+    /// Append `sample` if it is newer than what is held, fold it into the newest sample
+    /// if it is another label set at the same instant, then evict past `window`.
+    fn push(&mut self, sample: Sample, labels: u64, combine: Combine, window: Duration) {
+        match self.samples.last_mut() {
+            Some(last) if sample.at_ms < last.at_ms => return,
+            Some(last) if sample.at_ms == last.at_ms => {
+                if !self.newest_labels.contains(&labels) {
+                    self.newest_labels.push(labels);
+                    last.value = match combine {
+                        Combine::Max => last.value.max(sample.value),
+                        Combine::Sum => last.value + sample.value,
+                    };
+                }
+                return;
+            },
+            _ => {},
         }
+        self.newest_labels.clear();
+        self.newest_labels.push(labels);
         self.samples.push(sample);
         // Window eviction needs the window in millis. If it does not fit i64 (a
         // caller passing an implausible Duration), skip only the window cutoff; the
@@ -134,17 +168,28 @@ pub struct LoadStore {
     admitted: AtomicUsize,
     /// Retention per series.
     window: Duration,
+    /// How same-instant lines of one metric under different labels combine.
+    combine: CombinePolicy,
 }
 
 impl LoadStore {
-    /// Create an empty store retaining `window` of history per series.
+    /// Create an empty store retaining `window` of history per series, combining
+    /// same-instant lines of a metric by their larger value.
     #[must_use]
     pub fn new(window: Duration) -> Self {
+        Self::with_combine(window, combine_max)
+    }
+
+    /// Create an empty store retaining `window` of history per series, combining
+    /// same-instant lines of each metric as `combine` says.
+    #[must_use]
+    pub fn with_combine(window: Duration, combine: CombinePolicy) -> Self {
         Self {
             providers: DashMap::new(),
             owner_providers: DashMap::new(),
             admitted: AtomicUsize::new(0),
             window,
+            combine,
         }
     }
 
@@ -154,17 +199,26 @@ impl LoadStore {
         format!("{site}/{cluster}").into_boxed_str()
     }
 
-    /// Most recent sample of `metric` for `key`. Test-only since scoring reads
-    /// [`Self::window_worst`].
-    #[cfg(test)]
+    /// Most recent sample of `metric` for `key`.
+    #[must_use]
     pub fn latest(&self, key: &str, metric: &str) -> Option<Sample> {
         let provider = self.providers.get(key)?;
         provider.metrics.get(metric)?.samples.last().copied()
     }
 
+    /// When anything was last observed for `key`, across all its metrics.
+    #[must_use]
+    pub fn newest_at(&self, key: &str) -> Option<i64> {
+        let provider = self.providers.get(key)?;
+        provider
+            .metrics
+            .values()
+            .filter_map(|series| series.samples.last().map(|sample| sample.at_ms))
+            .max()
+    }
+
     /// Most recent sample of `metric` for `key` younger than `max_age_ms`.
-    /// Test-only since scoring reads [`Self::window_worst`].
-    #[cfg(test)]
+    #[must_use]
     pub fn fresh(&self, key: &str, metric: &str, now_ms: i64, max_age_ms: i64) -> Option<Sample> {
         // Range starts at zero: a future timestamp (publisher clock ahead) yields
         // a negative age that would otherwise read as fresh forever.
@@ -206,6 +260,59 @@ impl LoadStore {
                 None => sample.value,
                 Some(held) if lower_is_better => held.max(sample.value),
                 Some(held) => held.min(sample.value),
+            });
+        }
+        worst
+    }
+
+    /// Worst of `combine` over the instants in the last `window_ms` at which the first
+    /// of `metrics` has a sample, or `None` when no instant yields a value.
+    ///
+    /// Each instant hands `combine` the sample every metric holds at exactly that
+    /// time, `None` where a metric has none, so a value is concluded from readings
+    /// taken together rather than from each series' own worst. Worst is the max
+    /// when lower is better. Future-stamped samples are skipped.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keyed lookup with window bounds, score polarity, and the join"
+    )]
+    #[must_use]
+    pub fn window_worst_of<const N: usize, F>(
+        &self,
+        key: &str,
+        metrics: [&str; N],
+        now_ms: i64,
+        window_ms: i64,
+        lower_is_better: bool,
+        combine: F,
+    ) -> Option<f64>
+    where
+        F: Fn([Option<f64>; N]) -> Option<f64>,
+    {
+        let provider = self.providers.get(key)?;
+        let cutoff = now_ms.saturating_sub(window_ms);
+        let series = metrics.map(|metric| provider.metrics.get(metric));
+        let lead = series.first().copied().flatten()?;
+        let mut worst: Option<f64> = None;
+        for sample in &lead.samples {
+            if sample.at_ms < cutoff || sample.at_ms > now_ms {
+                continue;
+            }
+            // Samples are in timestamp order, so the instant is a binary search.
+            let at = |held: &Series| {
+                held.samples
+                    .binary_search_by_key(&sample.at_ms, |held| held.at_ms)
+                    .ok()
+                    .and_then(|index| held.samples.get(index))
+                    .map(|held| held.value)
+            };
+            let Some(value) = combine(series.map(|held| held.and_then(at))) else {
+                continue;
+            };
+            worst = Some(match worst {
+                None => value,
+                Some(held) if lower_is_better => held.max(value),
+                Some(held) => held.min(value),
             });
         }
         worst
@@ -263,15 +370,18 @@ impl LoadStore {
             observation.sample.at_ms = rebase_age(reference_ms, observation.sample.at_ms, local_now_ms);
 
             let key = Self::key(owner, observation.cluster.as_ref());
+            let combine = (self.combine)(observation.metric);
             match self.providers.entry(key) {
-                Entry::Occupied(mut occupied) => push_observation(occupied.get_mut(), &observation, self.window),
+                Entry::Occupied(mut occupied) => {
+                    push_observation(occupied.get_mut(), &observation, combine, self.window);
+                },
                 Entry::Vacant(vacant) => {
                     // A new key: admit it against both caps while its shard is
                     // locked, so the check and the insert cannot race a
                     // concurrent poller into overshooting a cap.
                     if self.admit_new_provider(owner) {
                         let mut provider = Provider::default();
-                        push_observation(&mut provider, &observation, self.window);
+                        push_observation(&mut provider, &observation, combine, self.window);
                         vacant.insert(provider);
                     }
                 },
@@ -310,15 +420,16 @@ impl LoadStore {
 /// names it holds. A known metric neither re-hashes nor allocates. A new metric
 /// owns its name only if it fits under the per-provider cap, which bounds a peer
 /// flooding unique names.
-fn push_observation(provider: &mut Provider, observation: &Observation<'_>, window: Duration) {
+fn push_observation(provider: &mut Provider, observation: &Observation<'_>, combine: Combine, window: Duration) {
     if let Some(series) = provider.metrics.get_mut(observation.metric) {
-        series.push(observation.sample, window);
+        series.push(observation.sample, observation.labels, combine, window);
     } else if provider.metrics.len() < MAX_METRICS_PER_PROVIDER {
-        provider
-            .metrics
-            .entry(observation.metric.into())
-            .or_default()
-            .push(observation.sample, window);
+        provider.metrics.entry(observation.metric.into()).or_default().push(
+            observation.sample,
+            observation.labels,
+            combine,
+            window,
+        );
     }
 }
 
@@ -349,6 +460,8 @@ struct Observation<'text> {
     site: Option<Cow<'text, str>>,
     /// Owning provider, from the `grid_provider` label.
     cluster: Cow<'text, str>,
+    /// A hash of every label on the line, naming the series within the metric.
+    labels: u64,
     /// The sample this line reported.
     sample: Sample,
 }
@@ -369,10 +482,15 @@ fn parse_sample(line: &str) -> Option<Observation<'_>> {
         return None;
     }
     let (site, cluster) = target_labels(&metric)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (name, value) in metric.labels() {
+        std::hash::Hash::hash(&(name, value.as_ref()), &mut hasher);
+    }
     Some(Observation {
         metric: metric.name(),
         site,
         cluster,
+        labels: std::hash::Hasher::finish(&hasher),
         sample: Sample {
             at_ms,
             value: metric.value(),
@@ -472,6 +590,47 @@ mod tests {
             },
             "value and time as reported"
         );
+    }
+
+    /// The hold sums across its partitions, everything else keeps the larger value.
+    fn total(metric: &str) -> Combine {
+        if metric == "held" { Combine::Sum } else { Combine::Max }
+    }
+
+    #[test]
+    fn same_instant_lines_under_other_labels_combine_and_a_republished_line_does_not() {
+        // Two flow-control partitions at one instant: the default keeps the larger, a
+        // sum policy keeps the total, and polling the same exposition again changes nothing.
+        let lines = concat!(
+            "held{grid_site=\"a\",grid_provider=\"p\",priority=\"0\"} 0 1000\n",
+            "held{grid_site=\"a\",grid_provider=\"p\",priority=\"1\"} 5 1000\n",
+            "held{grid_site=\"a\",grid_provider=\"p\",priority=\"2\"} 2 1000\n"
+        );
+        let key = LoadStore::key("a", "p");
+        let max = LoadStore::new(Duration::from_secs(60));
+        max.ingest_at(lines, 1_000, 1_000, "a");
+        max.ingest_at(lines, 1_000, 1_000, "a");
+        assert_eq!(
+            max.latest(&key, "held").map(|sample| sample.value),
+            Some(5.0),
+            "a zero partition hides nothing"
+        );
+        let sum = LoadStore::with_combine(Duration::from_secs(60), total);
+        sum.ingest_at(lines, 1_000, 1_000, "a");
+        sum.ingest_at(lines, 1_000, 1_000, "a");
+        assert_eq!(
+            sum.latest(&key, "held").map(|sample| sample.value),
+            Some(7.0),
+            "the total, once"
+        );
+        // The next instant starts over.
+        sum.ingest_at(
+            "held{grid_site=\"a\",grid_provider=\"p\",priority=\"1\"} 1 2000",
+            2_000,
+            2_000,
+            "a",
+        );
+        assert_eq!(sum.latest(&key, "held").map(|sample| sample.value), Some(1.0));
     }
 
     #[test]
@@ -818,6 +977,62 @@ mod tests {
             samples.last().map(|sample| sample.at_ms),
             Some(cap + 500),
             "the newest sample survives the cap"
+        );
+    }
+
+    #[test]
+    fn a_joined_worst_reads_each_instant_together() {
+        let store = LoadStore::new(Duration::from_secs(60));
+        // Two units running 10 each, then one unit running 20: 20 in flight both times,
+        // never the 40 that each series' own worst would multiply to.
+        for (at, running, units) in [(1_000, 10.0, 2.0), (2_000, 20.0, 1.0)] {
+            store.ingest_at(
+                &format!(
+                    "running{{grid_site=\"a\",grid_provider=\"p\"}} {running} {at}\nunits{{grid_site=\"a\",grid_provider=\"p\"}} {units} {at}"
+                ),
+                at,
+                at,
+                "a",
+            );
+        }
+        let key = LoadStore::key("a", "p");
+        let in_flight = |now: i64| {
+            store.window_worst_of(
+                &key,
+                ["running", "units", "queue"],
+                now,
+                30_000,
+                true,
+                |[running, units, queue]| Some((running? + queue.unwrap_or(0.0)) * units?),
+            )
+        };
+        assert_eq!(in_flight(2_000), Some(20.0));
+    }
+
+    #[test]
+    fn a_joined_worst_has_the_instants_of_its_first_series() {
+        let store = LoadStore::new(Duration::from_secs(60));
+        store.ingest_at(
+            "running{grid_site=\"a\",grid_provider=\"p\"} 10 1000\nunits{grid_site=\"a\",grid_provider=\"p\"} 2 1000\nrunning{grid_site=\"a\",grid_provider=\"p\"} 50 3000",
+            3_000,
+            3_000,
+            "a",
+        );
+        let key = LoadStore::key("a", "p");
+        // An instant missing the second series yields nothing.
+        assert_eq!(
+            store.window_worst_of(&key, ["running", "units"], 3_000, 30_000, true, |[running, units]| {
+                Some(running? * units?)
+            }),
+            Some(20.0)
+        );
+        assert_eq!(
+            store.window_worst_of(&key, ["units", "running"], 3_000, 30_000, true, |[units, _]| units),
+            Some(2.0)
+        );
+        assert_eq!(
+            store.window_worst_of(&key, ["absent", "running"], 3_000, 30_000, true, |[_, running]| running),
+            None
         );
     }
 
