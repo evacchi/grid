@@ -11,10 +11,16 @@
 //!       failure               → keep set, deadline unchanged
 //!       provider not polled   → drop set
 //!       deadline passed       → drop set
+//!     patch the discovery-owned status fields
+//!       changed set           → status.servedModels, absent once expired
+//!       failure reason        → status.modelDiscoveryError
 //! ```
 //!
 //! Freshness is absence: a set no poll renews expires after `ttl`, so a stale
 //! set fails closed and no reader compares one clock against another.
+//! `status.servedModels` is the durable hand-off to reconcile: writing it
+//! advances `resourceVersion`, so the CRDT revision of the gossiped provider
+//! record advances with the set.
 
 use std::{
     collections::BTreeMap,
@@ -29,7 +35,7 @@ use kube::{
 };
 
 use crate::{
-    crd::inference_provider::{InferenceProvider, ModelDiscoveryConfig, OpenAiModelsSource},
+    crd::inference_provider::{InferenceProvider, InferenceProviderStatus, ModelDiscoveryConfig, OpenAiModelsSource},
     error::OperatorError,
     metrics,
     resources::{
@@ -236,69 +242,137 @@ pub(crate) async fn discover(
         })
         .collect::<Vec<_>>();
     store.refresh(polled, Instant::now(), config.ttl);
-    publish_discovery_status(&api, &providers, &status_updates).await;
+    publish_discovery_status(&api, &providers, store, &status_updates).await;
     Ok(())
 }
 
-/// Patch changed discovery errors and clear them after success or when disabled.
+/// Patch changed discovery-owned status: the failure reason and the served set.
+///
+/// `store` is read after this round's refresh, so an expired or dropped set
+/// reads as absent and is cleared from the status.
 async fn publish_discovery_status(
     api: &Api<InferenceProvider>,
     providers: &[InferenceProvider],
+    store: &ServedModelStore,
     polled: &[ProviderPollStatus],
 ) {
     for provider in providers {
-        if let Some((name, incoming_error)) = discovery_error_patch_for_provider(provider, polled)
-            && let Err(error) = patch_discovery_status(api, name, incoming_error).await
+        if let Some(desired) = DiscoveryStatusPatch::for_provider(provider, store, polled)
+            && let Err(error) = patch_discovery_status(api, &desired).await
         {
-            tracing::warn!(provider = %name, %error, "failed to patch model discovery status");
+            tracing::warn!(provider = %desired.name, %error, "failed to patch model discovery status");
         }
     }
 }
 
-/// Decide whether one provider's discovery error needs a status patch.
-///
-/// `None` means no patch; `Some((name, None))` clears the field; and
-/// `Some((name, Some(reason)))` sets it.
-fn discovery_error_patch_for_provider<'provider>(
-    provider: &'provider InferenceProvider,
-    polled: &[ProviderPollStatus],
-) -> Option<(&'provider str, Option<&'static str>)> {
-    let provider_name = provider.metadata.name.as_deref()?;
-    let incoming_error = polled
-        .iter()
-        .find(|status| status.name == provider_name)
-        .and_then(|status| status.failure_reason);
-    let current_error = provider
-        .status
-        .as_ref()
-        .and_then(|status| status.model_discovery_error.as_deref());
-    if current_error == incoming_error {
-        None
-    } else {
-        Some((provider_name, incoming_error))
+/// The discovery-owned status desired for one provider.
+#[derive(Debug, PartialEq)]
+struct DiscoveryStatusPatch {
+    /// `InferenceProvider` name.
+    name: String,
+
+    /// Failure reason, or `None` after a successful poll.
+    failure_reason: Option<&'static str>,
+
+    /// Served-model set, or `None` when unknown, expired, or discovery is off.
+    models: Option<Vec<String>>,
+}
+
+impl DiscoveryStatusPatch {
+    /// Decide whether one provider's discovery status needs a patch.
+    ///
+    /// `None` when the current status already shows the desired failure reason
+    /// and served-model set. The desired set is the store's effective set, which
+    /// is absent for a provider whose discovery is disabled, never succeeded, or
+    /// expired: absence is the fail-closed state. An empty set is present and
+    /// distinct from absence.
+    fn for_provider(
+        provider: &InferenceProvider,
+        store: &ServedModelStore,
+        polled: &[ProviderPollStatus],
+    ) -> Option<Self> {
+        let name = provider.metadata.name.as_deref()?;
+        let failure_reason = polled
+            .iter()
+            .find(|status| status.name == name)
+            .and_then(|status| status.failure_reason);
+        let models = provider
+            .spec
+            .model_discovery
+            .as_ref()
+            .and_then(|_| store.models(name))
+            .map(|models| models.to_vec());
+        let desired = DiscoveryStatusPatch {
+            name: name.to_owned(),
+            failure_reason,
+            models,
+        };
+        let current = provider.status.as_ref();
+        if desired.has_same_error(current) && desired.has_same_models(current) {
+            return None;
+        }
+        Some(desired)
+    }
+
+    /// Whether `current` shows exactly this patch's served-model set.
+    ///
+    /// Model lists are compared as sets: poll response order is not stable,
+    /// so a reordered set is not a change. Both sides are sorted for the
+    /// comparison only — the store and the status keep the order they were
+    /// given — and sorting also keeps duplicate entries from comparing
+    /// equal.
+    fn has_same_models(&self, current: Option<&InferenceProviderStatus>) -> bool {
+        let current_models = current.and_then(|status| status.served_models.as_deref());
+        let sorted = |models: &[String]| {
+            let mut names = models.to_vec();
+            names.sort_unstable();
+            names
+        };
+        match (current_models, self.models.as_deref()) {
+            (None, None) => true,
+            (Some(current_names), Some(desired_names)) => sorted(current_names) == sorted(desired_names),
+            _ => false,
+        }
+    }
+
+    /// Whether `current` shows exactly this patch's failure reason.
+    fn has_same_error(&self, current: Option<&InferenceProviderStatus>) -> bool {
+        let current_error = current.and_then(|status| status.model_discovery_error.as_deref());
+        current_error == self.failure_reason
     }
 }
 
-/// Apply only the discovery-owned status field.
+/// The discovery-owned status fields to apply: present fields only.
+///
+/// Server-side apply removes a field this manager owns when the applied
+/// config omits it, which is how a cleared error or an expired set leaves
+/// the status. Reconciler-owned fields are untouched.
+fn discovery_status_fields(desired: &DiscoveryStatusPatch) -> serde_json::Value {
+    let mut status = serde_json::Map::new();
+    if let Some(reason) = desired.failure_reason {
+        status.insert("modelDiscoveryError".to_owned(), serde_json::json!(reason));
+    }
+    if let Some(models) = &desired.models {
+        status.insert("servedModels".to_owned(), serde_json::json!(models));
+    }
+    status.into()
+}
+
+/// Apply only the discovery-owned status fields.
 async fn patch_discovery_status(
     api: &Api<InferenceProvider>,
-    name: &str,
-    error: Option<&str>,
+    desired: &DiscoveryStatusPatch,
 ) -> Result<(), OperatorError> {
-    let discovery_status = match error {
-        Some(error) => serde_json::json!({ "modelDiscoveryError": error }),
-        None => serde_json::json!({}),
-    };
-    let patch = serde_json::json!({
+    let apply = serde_json::json!({
         "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
-        "metadata": { "name": name },
-        "status": discovery_status
+        "metadata": { "name": desired.name },
+        "status": discovery_status_fields(desired)
     });
     api.patch_status(
-        name,
+        &desired.name,
         &PatchParams::apply(DISCOVERY_FIELD_MANAGER).force(),
-        &Patch::Apply(patch),
+        &Patch::Apply(apply),
     )
     .await?;
     Ok(())
@@ -551,7 +625,8 @@ mod tests {
     }
 
     #[test]
-    fn discovery_error_patch_sets_failure_and_skips_unchanged_error() {
+    fn failure_sets_reason_and_skips_unchanged_status() {
+        let store = ServedModelStore::new();
         let provider_name = "provider-a";
         let provider_without_status = test_provider(provider_name, None);
         let provider_with_error = test_provider(provider_name, Some("credential"));
@@ -560,36 +635,219 @@ mod tests {
             failure_reason: Some("credential"),
         }];
         assert_eq!(
-            discovery_error_patch_for_provider(&provider_without_status, &failed),
-            Some((provider_name, Some("credential"))),
+            DiscoveryStatusPatch::for_provider(&provider_without_status, &store, &failed),
+            Some(DiscoveryStatusPatch {
+                name: provider_name.to_owned(),
+                failure_reason: Some("credential"),
+                models: None,
+            }),
             "a failed poll should set its reason"
         );
         assert_eq!(
-            discovery_error_patch_for_provider(&provider_with_error, &failed),
+            DiscoveryStatusPatch::for_provider(&provider_with_error, &store, &failed),
             None,
             "an unchanged error should not be patched"
         );
     }
 
     #[test]
-    fn discovery_error_patch_clears_after_success_or_disabled_source() {
+    fn success_or_disabled_discovery_clears_a_previous_error() {
+        let store = ServedModelStore::new();
         let provider_name = "provider-a";
         let provider_with_error = test_provider(provider_name, Some("credential"));
+        let succeeded = vec![ProviderPollStatus {
+            name: provider_name.to_owned(),
+            failure_reason: None,
+        }];
         assert_eq!(
-            discovery_error_patch_for_provider(
-                &provider_with_error,
-                &[ProviderPollStatus {
-                    name: provider_name.to_owned(),
-                    failure_reason: None,
-                }],
-            ),
-            Some((provider_name, None)),
+            DiscoveryStatusPatch::for_provider(&provider_with_error, &store, &succeeded),
+            Some(DiscoveryStatusPatch {
+                name: provider_name.to_owned(),
+                failure_reason: None,
+                models: None,
+            }),
             "a successful poll should clear the previous error"
         );
+        let polled = &[];
         assert_eq!(
-            discovery_error_patch_for_provider(&provider_with_error, &[]),
-            Some((provider_name, None)),
+            DiscoveryStatusPatch::for_provider(&provider_with_error, &store, polled),
+            Some(DiscoveryStatusPatch {
+                name: provider_name.to_owned(),
+                failure_reason: None,
+                models: None,
+            }),
             "removing model discovery should clear the previous error"
+        );
+    }
+
+    #[test]
+    fn success_writes_the_served_set() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["b", "a"]))]), Instant::now(), TTL);
+
+        let provider = &discovery_provider("p", &serde_json::json!({}));
+        let polled = &[];
+        let patch = DiscoveryStatusPatch::for_provider(provider, &store, polled);
+
+        assert_eq!(
+            patch,
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: None,
+                models: Some(owned(&["b", "a"])),
+            }),
+            "a changed set should be written as polled"
+        );
+    }
+
+    #[test]
+    fn an_empty_set_is_written_not_cleared() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&[]))]), Instant::now(), TTL);
+
+        let provider = &discovery_provider("p", &serde_json::json!({}));
+        let polled = &[];
+        let patch = DiscoveryStatusPatch::for_provider(provider, &store, polled);
+
+        assert_eq!(
+            patch.map(|desired| desired.models),
+            Some(Some(Vec::new())),
+            "an empty discovered set is present, distinct from absence"
+        );
+    }
+
+    #[test]
+    fn unchanged_status_is_not_patched() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
+
+        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
+
+        let polled = &[];
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, polled),
+            None,
+            "an unchanged set should not be patched"
+        );
+    }
+
+    #[test]
+    fn a_reordered_set_is_not_a_change() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["a", "b"]))]), Instant::now(), TTL);
+
+        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["b", "a"] }));
+
+        let polled = &[];
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, polled),
+            None,
+            "response order is not part of the set"
+        );
+    }
+
+    #[test]
+    fn a_substituted_model_is_a_change() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["a", "b"]))]), Instant::now(), TTL);
+
+        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a", "c"] }));
+
+        let polled = &[];
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, polled),
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: None,
+                models: Some(owned(&["a", "b"])),
+            }),
+            "a substituted model must be written"
+        );
+    }
+
+    #[test]
+    fn failure_keeps_the_held_set_in_status() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
+        store.refresh(round(&[("p", None)]), Instant::now(), TTL);
+
+        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
+        let failed = vec![ProviderPollStatus {
+            name: "p".to_owned(),
+            failure_reason: Some("unreachable"),
+        }];
+
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, &failed),
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: Some("unreachable"),
+                models: Some(owned(&["a"])),
+            }),
+            "a failed poll sets its reason and keeps the held set"
+        );
+    }
+
+    #[test]
+    fn expired_set_is_cleared_from_status() {
+        let store = ServedModelStore::new();
+        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), Duration::ZERO);
+
+        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
+        let failed = vec![ProviderPollStatus {
+            name: "p".to_owned(),
+            failure_reason: Some("unreachable"),
+        }];
+
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, &failed),
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: Some("unreachable"),
+                models: None,
+            }),
+            "an expired set must leave the status: fail closed"
+        );
+    }
+
+    #[test]
+    fn removed_discovery_clears_the_served_set() {
+        let store = ServedModelStore::new();
+        let provider = test_provider_with_status("p", &serde_json::json!({ "servedModels": ["a"] }));
+
+        let polled = &[];
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(&provider, &store, polled),
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: None,
+                models: None,
+            }),
+            "disabling discovery must clear the served set"
+        );
+    }
+
+    #[test]
+    fn status_apply_carries_only_present_fields() {
+        let with_both = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: Some("timeout"),
+            models: Some(owned(&["a"])),
+        };
+        assert_eq!(
+            discovery_status_fields(&with_both),
+            serde_json::json!({ "modelDiscoveryError": "timeout", "servedModels": ["a"] })
+        );
+
+        let cleared = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: None,
+        };
+        assert_eq!(
+            discovery_status_fields(&cleared),
+            serde_json::json!({}),
+            "omitted fields are removed by the apply"
         );
     }
 
@@ -719,18 +977,38 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn test_provider(name: &str, discovery_error: Option<&str>) -> InferenceProvider {
+        let status = discovery_error.map_or_else(
+            || serde_json::json!({}),
+            |error| serde_json::json!({ "modelDiscoveryError": error }),
+        );
+        provider_from_json(name, &status, false)
+    }
+
+    fn test_provider_with_status(name: &str, status: &serde_json::Value) -> InferenceProvider {
+        provider_from_json(name, status, false)
+    }
+
+    fn discovery_provider(name: &str, status: &serde_json::Value) -> InferenceProvider {
+        provider_from_json(name, status, true)
+    }
+
+    fn provider_from_json(name: &str, status: &serde_json::Value, discovery: bool) -> InferenceProvider {
+        let mut spec = serde_json::json!({
+            "gridNetworkRef": "net",
+            "providerKind": "self_hosted",
+            "backendKind": "local",
+            "endpoint": "http://provider",
+            "models": [{ "name": "model-a" }]
+        });
+        if discovery && let Some(spec) = spec.as_object_mut() {
+            spec.insert("modelDiscovery".to_owned(), serde_json::json!({ "openAiModels": {} }));
+        }
         serde_json::from_value(serde_json::json!({
             "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "InferenceProvider",
             "metadata": { "name": name },
-            "spec": {
-                "gridNetworkRef": "net",
-                "providerKind": "self_hosted",
-                "backendKind": "local",
-                "endpoint": "http://provider",
-                "models": [{ "name": "model-a" }]
-            },
-            "status": discovery_error.map(|error| serde_json::json!({ "modelDiscoveryError": error }))
+            "spec": spec,
+            "status": status.clone()
         }))
         .unwrap_or_else(|_| std::process::abort())
     }
