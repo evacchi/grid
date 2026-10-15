@@ -1074,6 +1074,18 @@ loop owns this field separately from the provider's routing phase and clears
 it when discovery is disabled. The field reports the latest poll error; the
 held model set still follows its TTL independently.
 
+`status.servedModels` is the discovered set itself: the deduplicated model
+names the loop currently holds for this provider, in the order the backend
+reported them (the field is a set; order carries no meaning). It is written
+only when the set changes, and it is present only while `modelDiscovery` is
+configured and the set is within its TTL — an expired, disabled, or
+never-succeeded discovery leaves the field absent, which readers must treat
+as serving nothing (fail closed). An empty set is present and means the
+backend serves no models. Writing the field advances
+`metadata.resourceVersion`, so the CRDT revision of the gossiped provider
+record advances with the set; this is the hand-off point for routing and
+gossip consuming discovered models.
+
 The bearer token comes from `spec.auth`. A model-discovery URL must use HTTPS
 when a bearer token is configured. With `auth.manual`, requests carry no
 credentials, so plain HTTP remains available.
