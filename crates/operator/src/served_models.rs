@@ -77,8 +77,6 @@ impl Default for DiscoveryConfig {
     }
 }
 
-type ServedModelMap = BTreeMap<String, ServedModel>;
-
 // ---------------------------------------------------------------------------
 // ServedModelStore
 // ---------------------------------------------------------------------------
@@ -125,6 +123,15 @@ impl ServedModelExpiry {
     }
 }
 
+/// Format the wall-clock expiry boundary persisted for a successful model poll.
+fn status_expiry(wall_now: time::OffsetDateTime, ttl: Duration) -> Option<String> {
+    let ttl = time::Duration::try_from(ttl).ok()?;
+    wall_now
+        .checked_add(ttl)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
 /// The result of polling one named provider.
 struct ProviderPoll(
     /// Models reported, or a failed poll.
@@ -160,13 +167,72 @@ impl PollOutcome {
     }
 }
 
+/// Provider names mapped to their currently held served-model sets.
+#[derive(Debug, Default)]
+struct ServedModelMap(
+    /// Provider name to held served-model inventory.
+    BTreeMap<String, ServedModel>,
+);
+
+impl ServedModelMap {
+    /// Look up the held inventory for a provider.
+    fn get(&self, name: &str) -> Option<&ServedModel> {
+        self.0.get(name)
+    }
+
+    /// Drop providers no longer polled and sets whose freshness deadline passed.
+    fn retain_for_refresh(&mut self, updated: &[ProviderPoll], expiry: &ServedModelExpiry) {
+        let started_at = expiry.started_at;
+        self.0.retain(|provider, served| {
+            let maybe_provider = updated.iter().find(|ProviderPoll(_, p)| *p == *provider);
+            match maybe_provider {
+                None => {
+                    tracing::debug!(provider, "served models dropped");
+                    false
+                },
+                Some(ProviderPoll(PollOutcome::Failed(_), _)) if served.expires_at <= started_at => {
+                    tracing::debug!(provider, "served models expired");
+                    false
+                },
+                Some(_) => served.expires_at > started_at,
+            }
+        });
+    }
+
+    /// Replace held sets for providers whose discovery poll succeeded.
+    fn insert_updated(&mut self, updated: Vec<ProviderPoll>, expiry: &ServedModelExpiry) {
+        for ProviderPoll(outcome, name) in updated {
+            if let PollOutcome::Served(discovered) = outcome {
+                let (Some(expires_at), Some(expires_at_status)) = (expiry.monotonic, expiry.status.as_deref()) else {
+                    tracing::warn!(
+                        name,
+                        ttl = ?expiry.ttl,
+                        "model discovery expiry exceeds the supported timestamp range"
+                    );
+                    continue;
+                };
+                let models: Arc<[String]> = discovered.into_names().into();
+                tracing::debug!(name, ?models, "served models refreshed");
+                self.0.insert(
+                    name,
+                    ServedModel {
+                        models,
+                        expires_at,
+                        expires_at_status: expires_at_status.to_owned(),
+                    },
+                );
+            }
+        }
+    }
+}
+
 /// Served-model sets keyed by `InferenceProvider` name.
 ///
 /// Cheap to clone; clones share the same sets.
 #[derive(Clone, Debug, Default)]
 pub struct ServedModelStore {
     /// Provider name to its held set.
-    inner: Arc<RwLock<BTreeMap<String, ServedModel>>>,
+    inner: Arc<RwLock<ServedModelMap>>,
 }
 
 impl ServedModelStore {
@@ -204,71 +270,9 @@ impl ServedModelStore {
             return;
         };
 
-        prune_before_refresh(&mut map, &updated, expiry.started_at);
-        for ProviderPoll(outcome, name) in updated {
-            match outcome {
-                PollOutcome::Served(discovered) => insert_served_models(&mut map, name, discovered, expiry),
-                PollOutcome::Failed(_) => {},
-            }
-        }
+        map.retain_for_refresh(&updated, expiry);
+        map.insert_updated(updated, expiry);
     }
-}
-
-/// Replace one provider's held set after a successful discovery response.
-fn insert_served_models(
-    map: &mut ServedModelMap,
-    name: String,
-    discovered: ServedModels,
-    expiry: &ServedModelExpiry,
-) {
-    let (Some(expires_at), Some(expires_at_status)) = (expiry.monotonic, expiry.status.as_deref()) else {
-        tracing::warn!(
-            name,
-            ttl = ?expiry.ttl,
-            "model discovery expiry exceeds the supported timestamp range"
-        );
-        return;
-    };
-    let models: Arc<[String]> = discovered.into_names().into();
-    tracing::debug!(name, ?models, "served models refreshed");
-    map.insert(
-        name,
-        ServedModel {
-            models,
-            expires_at,
-            expires_at_status: expires_at_status.to_owned(),
-        },
-    );
-}
-
-/// Format the wall-clock expiry boundary persisted for a successful model poll.
-fn status_expiry(wall_now: time::OffsetDateTime, ttl: Duration) -> Option<String> {
-    let ttl = time::Duration::try_from(ttl).ok()?;
-    wall_now
-        .checked_add(ttl)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .ok()
-}
-
-/// Remove unpolled and expired entries before applying successful results.
-fn prune_before_refresh(map: &mut BTreeMap<String, ServedModel>, updated: &[ProviderPoll], now: Instant) {
-    map.retain(
-        |provider, served| {
-            let maybe_provider =
-                updated.iter().find(|ProviderPoll(_, p)| *p == *provider);
-            match maybe_provider {
-                None => {
-                    tracing::debug!(provider, "served models dropped");
-                    false
-                },
-                Some(ProviderPoll(PollOutcome::Failed(_), _)) if served.expires_at <= now => {
-                    tracing::debug!(provider, "served models expired");
-                    false
-                },
-                Some(_) => served.expires_at > now,
-            }
-        },
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -421,25 +425,24 @@ impl DiscoveryStatusPatch {
     fn has_same_expiration(&self, current: Option<&InferenceProviderStatus>) -> bool {
         current.and_then(|status| status.served_models_expires_at.as_deref()) == self.expires_at.as_deref()
     }
-}
 
-/// The discovery-owned status fields to apply: present fields only.
-///
-/// Server-side apply removes a field this manager owns when the applied
-/// config omits it, which is how a cleared error or an expired set leaves
-/// the status. Reconciler-owned fields are untouched.
-fn discovery_status_fields(desired: &DiscoveryStatusPatch) -> serde_json::Value {
-    let mut status = serde_json::Map::new();
-    if let Some(reason) = desired.failure_reason {
-        status.insert("modelDiscoveryError".to_owned(), serde_json::json!(reason));
+    /// Build the discovery-owned status fields to apply.
+    ///
+    /// Server-side apply removes a field this manager owns when the applied
+    /// config omits it, which clears expired or disabled discovery fields.
+    fn status_fields(&self) -> serde_json::Value {
+        let mut status = serde_json::Map::new();
+        if let Some(reason) = self.failure_reason {
+            status.insert("modelDiscoveryError".to_owned(), serde_json::json!(reason));
+        }
+        if let Some(models) = &self.models {
+            status.insert("servedModels".to_owned(), serde_json::json!(models));
+        }
+        if let Some(expires_at) = &self.expires_at {
+            status.insert("servedModelsExpiresAt".to_owned(), serde_json::json!(expires_at));
+        }
+        status.into()
     }
-    if let Some(models) = &desired.models {
-        status.insert("servedModels".to_owned(), serde_json::json!(models));
-    }
-    if let Some(expires_at) = &desired.expires_at {
-        status.insert("servedModelsExpiresAt".to_owned(), serde_json::json!(expires_at));
-    }
-    status.into()
 }
 
 /// Apply only the discovery-owned status fields.
@@ -451,7 +454,7 @@ async fn patch_discovery_status(
         "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
         "metadata": { "name": desired.name },
-        "status": discovery_status_fields(desired)
+        "status": desired.status_fields()
     });
     api.patch_status(
         &desired.name,
@@ -883,7 +886,7 @@ mod tests {
             expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
         };
         assert_eq!(
-            discovery_status_fields(&with_both),
+            with_both.status_fields(),
             serde_json::json!({
                 "modelDiscoveryError": "timeout",
                 "servedModels": ["a"],
@@ -898,7 +901,7 @@ mod tests {
             expires_at: None,
         };
         assert_eq!(
-            discovery_status_fields(&cleared),
+            cleared.status_fields(),
             serde_json::json!({}),
             "omitted fields are removed by the apply"
         );
