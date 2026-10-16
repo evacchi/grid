@@ -33,6 +33,9 @@ pub(crate) const GCP_METADATA_V6: Ipv6Addr = Ipv6Addr::new(0xFD20, 0x00CE, 0, 0,
 /// EKS Pod Identity agent IPv6 endpoint.
 pub(crate) const EKS_POD_IDENTITY_V6: Ipv6Addr = Ipv6Addr::new(0xFD00, 0x0EC2, 0, 0, 0, 0, 0, 0x0023);
 
+/// Akamai Cloud instance metadata service IPv6 endpoint.
+pub(crate) const AKAMAI_METADATA_V6: Ipv6Addr = Ipv6Addr::new(0xFD00, 0xA9FE, 0xA9FE, 0, 0, 0, 0, 1);
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -133,6 +136,7 @@ fn is_ssrf_sensitive(ip: &IpAddr) -> bool {
                 || *v6 == AWS_METADATA_V6
                 || *v6 == GCP_METADATA_V6
                 || *v6 == EKS_POD_IDENTITY_V6
+                || *v6 == AKAMAI_METADATA_V6
         },
     }
 }
@@ -349,12 +353,19 @@ mod tests {
     }
 
     #[test]
-    fn aws_metadata_ipv6_is_blocked() {
-        let metadata = vec![addr("[fd00:ec2::254]:80")];
-        assert!(
-            !check_resolved_addrs(&metadata),
-            "the AWS IPv6 metadata endpoint must stay blocked even inside the unique-local range"
-        );
+    fn cloud_metadata_ipv6_answers_are_blocked() {
+        for metadata_address in [
+            "[fd00:ec2::254]:80",
+            "[fd20:ce::254]:80",
+            "[fd00:ec2::23]:80",
+            "[fd00:a9fe:a9fe::1]:80",
+        ] {
+            let resolved_address = [addr(metadata_address)];
+            assert!(
+                !check_resolved_addrs(&resolved_address),
+                "{metadata_address} serves cloud credentials and must stay blocked inside the unique-local range"
+            );
+        }
     }
 
     #[test]

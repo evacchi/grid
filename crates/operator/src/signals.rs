@@ -923,7 +923,8 @@ pub(crate) fn is_dialable_ip(ip: IpAddr) -> bool {
                 || v6.is_unicast_link_local()
                 || v6 == endpoint_resolution::AWS_METADATA_V6
                 || v6 == endpoint_resolution::GCP_METADATA_V6
-                || v6 == endpoint_resolution::EKS_POD_IDENTITY_V6)
+                || v6 == endpoint_resolution::EKS_POD_IDENTITY_V6
+                || v6 == endpoint_resolution::AKAMAI_METADATA_V6)
         },
     }
 }
