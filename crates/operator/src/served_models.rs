@@ -9,6 +9,7 @@
 //!     ServedModelStore::refresh
 //!       success               → replace set, renew deadline
 //!       failure               → keep set, deadline unchanged
+//!       provider UID/URL changed → drop set
 //!       provider not polled   → drop set
 //!       deadline passed       → drop set
 //!     patch the discovery-owned status fields
@@ -84,6 +85,9 @@ impl Default for DiscoveryConfig {
 /// A provider's served-model set and when it stops being held.
 #[derive(Debug)]
 struct ServedModel {
+    /// Provider incarnation and source that produced this set.
+    source: DiscoveryKey,
+
     /// Validated model names.
     models: Arc<[String]>,
 
@@ -92,6 +96,27 @@ struct ServedModel {
 
     /// RFC 3339 UTC deadline persisted with the model set.
     expires_at_status: String,
+}
+
+/// Identity of the provider and concrete endpoint used for discovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DiscoveryKey {
+    /// Kubernetes UID distinguishes replacements with the same name.
+    uid: String,
+
+    /// URL includes the configured endpoint fallback and models path.
+    url: String,
+}
+
+impl DiscoveryKey {
+    /// Resolve the identity for a discoverable provider.
+    fn for_provider(provider: &InferenceProvider) -> Option<Self> {
+        let uid = provider.metadata.uid.clone()?;
+        let url = match provider.spec.model_discovery.as_ref()? {
+            ModelDiscoveryConfig::OpenAiModels(source) => source.effective_url(&provider.spec.endpoint),
+        };
+        Some(Self { uid, url })
+    }
 }
 
 /// Expiry values prepared for one poll round.
@@ -138,6 +163,8 @@ struct ProviderPoll(
     PollOutcome,
     /// `InferenceProvider` name.
     String,
+    /// Provider incarnation and source that was polled.
+    DiscoveryKey,
 );
 
 /// The status-relevant outcome of one provider poll.
@@ -184,13 +211,17 @@ impl ServedModelMap {
     fn retain_for_refresh(&mut self, updated: &[ProviderPoll], expiry: &ServedModelExpiry) {
         let started_at = expiry.started_at;
         self.0.retain(|provider, served| {
-            let maybe_provider = updated.iter().find(|ProviderPoll(_, p)| *p == *provider);
+            let maybe_provider = updated.iter().find(|ProviderPoll(_, p, _)| *p == *provider);
             match maybe_provider {
                 None => {
                     tracing::debug!(provider, "served models dropped");
                     false
                 },
-                Some(ProviderPoll(PollOutcome::Failed(_), _)) if served.expires_at <= started_at => {
+                Some(ProviderPoll(_, _, source)) if served.source != *source => {
+                    tracing::debug!(provider, "served models provider or source changed");
+                    false
+                },
+                Some(ProviderPoll(PollOutcome::Failed(_), ..)) if served.expires_at <= started_at => {
                     tracing::debug!(provider, "served models expired");
                     false
                 },
@@ -201,7 +232,7 @@ impl ServedModelMap {
 
     /// Replace held sets for providers whose discovery poll succeeded.
     fn insert_updated(&mut self, updated: Vec<ProviderPoll>, expiry: &ServedModelExpiry) {
-        for ProviderPoll(outcome, name) in updated {
+        for ProviderPoll(outcome, name, source) in updated {
             if let PollOutcome::Served(discovered) = outcome {
                 let (Some(expires_at), Some(expires_at_status)) = (expiry.monotonic, expiry.status.as_deref()) else {
                     tracing::warn!(
@@ -216,6 +247,7 @@ impl ServedModelMap {
                 self.0.insert(
                     name,
                     ServedModel {
+                        source,
                         models,
                         expires_at,
                         expires_at_status: expires_at_status.to_owned(),
@@ -242,19 +274,21 @@ impl ServedModelStore {
         Self::default()
     }
 
-    /// Models `provider` serves, or `None` when unknown or expired.
+    /// Models `provider` serves, or `None` when unknown, changed, or expired.
     #[must_use]
-    pub fn models(&self, provider: &str) -> Option<Arc<[String]>> {
+    pub fn models(&self, provider: &InferenceProvider) -> Option<Arc<[String]>> {
         self.fresh_inventory(provider).map(|(models, _)| models)
     }
 
-    /// Models and their persisted expiry deadline, or `None` when unknown or expired.
-    fn fresh_inventory(&self, provider: &str) -> Option<(Arc<[String]>, String)> {
+    /// Models and their persisted expiry deadline for the same provider source.
+    fn fresh_inventory(&self, provider: &InferenceProvider) -> Option<(Arc<[String]>, String)> {
+        let name = provider.metadata.name.as_deref()?;
+        let source = DiscoveryKey::for_provider(provider)?;
         let now = Instant::now();
         let guard = self.inner.read().ok()?;
         guard
-            .get(provider)
-            .filter(|held| held.expires_at > now)
+            .get(name)
+            .filter(|held| held.source == source && held.expires_at > now)
             .map(|held| (Arc::clone(&held.models), held.expires_at_status.clone()))
     }
 
@@ -309,7 +343,7 @@ pub(crate) async fn discover(
 
     let status_updates = polled
         .iter()
-        .map(|ProviderPoll(outcome, name)| ProviderPollStatus {
+        .map(|ProviderPoll(outcome, name, _)| ProviderPollStatus {
             name: name.clone(),
             failure_reason: outcome.failure_reason(),
         })
@@ -373,11 +407,7 @@ impl DiscoveryStatusPatch {
             .iter()
             .find(|status| status.name == name)
             .and_then(|status| status.failure_reason);
-        let inventory = provider
-            .spec
-            .model_discovery
-            .as_ref()
-            .and_then(|_| store.fresh_inventory(name));
+        let inventory = store.fresh_inventory(provider);
         let (models, expires_at) = inventory.map_or((None, None), |(models, expires_at)| {
             (Some(models.to_vec()), Some(expires_at))
         });
@@ -512,6 +542,7 @@ async fn poll(
     timeout: Duration,
 ) -> Option<ProviderPoll> {
     let name = provider.metadata.name.as_deref()?.to_owned();
+    let source = DiscoveryKey::for_provider(provider)?;
     let result = match config {
         ModelDiscoveryConfig::OpenAiModels(openai) => query_openai(provider, openai, client, timeout).await,
     };
@@ -529,7 +560,7 @@ async fn poll(
         },
     };
 
-    Some(ProviderPoll(outcome, name))
+    Some(ProviderPoll(outcome, name, source))
 }
 
 /// Build an [`OpenAiModels`] source and list its models.
@@ -882,6 +913,24 @@ mod tests {
     }
 
     #[test]
+    fn failed_poll_after_provider_replacement_clears_old_inventory() {
+        let store = ServedModelStore::new();
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
+        let mut provider = discovery_provider("p", &status_with_models(&store, &["a"]));
+        provider.metadata.uid = Some("replacement-uid".to_owned());
+        assert_failed_poll_clears_old_inventory(&store, &provider);
+    }
+
+    #[test]
+    fn failed_poll_after_endpoint_change_clears_old_inventory() {
+        let store = ServedModelStore::new();
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
+        let mut provider = discovery_provider("p", &status_with_models(&store, &["a"]));
+        provider.spec.endpoint = "http://replacement".to_owned();
+        assert_failed_poll_clears_old_inventory(&store, &provider);
+    }
+
+    #[test]
     fn expired_set_is_cleared_from_status() {
         let store = ServedModelStore::new();
         refresh(&store, round(&[("p", Some(&["a"]))]), Duration::ZERO);
@@ -1113,7 +1162,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "grid.praxis.fast/v1alpha1",
             "kind": "InferenceProvider",
-            "metadata": { "name": name },
+            "metadata": { "name": name, "uid": "test-provider-uid" },
             "spec": spec,
             "status": status.clone()
         }))
@@ -1131,7 +1180,14 @@ mod tests {
                     ),
                     None => PollOutcome::Failed(PollError::Credential(String::new())),
                 };
-                ProviderPoll(outcome, provider.to_owned())
+                ProviderPoll(
+                    outcome,
+                    provider.to_owned(),
+                    DiscoveryKey {
+                        uid: "test-provider-uid".to_owned(),
+                        url: "http://provider/v1/models".to_owned(),
+                    },
+                )
             })
             .collect()
     }
@@ -1141,12 +1197,45 @@ mod tests {
         store.refresh(updated, &expiry);
     }
 
+    /// Verify a failed poll cannot keep or publish another source's inventory.
+    fn assert_failed_poll_clears_old_inventory(store: &ServedModelStore, provider: &InferenceProvider) {
+        let source = DiscoveryKey::for_provider(provider).unwrap_or_else(|| std::process::abort());
+        let failed_poll = ProviderPoll(
+            PollOutcome::Failed(PollError::Credential(String::new())),
+            "p".to_owned(),
+            source,
+        );
+        refresh(store, vec![failed_poll], TTL);
+
+        assert_eq!(
+            store.models(provider),
+            None,
+            "changed source must not read the old inventory"
+        );
+        let failed = [ProviderPollStatus {
+            name: "p".to_owned(),
+            failure_reason: Some("credential"),
+        }];
+        assert_eq!(
+            DiscoveryStatusPatch::for_provider(provider, store, &failed),
+            Some(DiscoveryStatusPatch {
+                name: "p".to_owned(),
+                failure_reason: Some("credential"),
+                models: None,
+                expires_at: None,
+            }),
+            "a failed poll after a source change must clear old models and expiry"
+        );
+    }
+
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|&n| n.to_owned()).collect()
     }
 
     fn stored_expiry(store: &ServedModelStore, provider: &str) -> Option<String> {
-        store.fresh_inventory(provider).map(|(_, expires_at)| expires_at)
+        store
+            .fresh_inventory(&discovery_provider(provider, &serde_json::json!({})))
+            .map(|(_, expires_at)| expires_at)
     }
 
     fn status_with_models(store: &ServedModelStore, models: &[&str]) -> serde_json::Value {
@@ -1157,10 +1246,12 @@ mod tests {
     }
 
     fn names(store: &ServedModelStore, provider: &str) -> Option<Vec<String>> {
-        store.models(provider).map(|models| {
-            let mut names = models.to_vec();
-            names.sort_unstable();
-            names
-        })
+        store
+            .models(&discovery_provider(provider, &serde_json::json!({})))
+            .map(|models| {
+                let mut names = models.to_vec();
+                names.sort_unstable();
+                names
+            })
     }
 }
