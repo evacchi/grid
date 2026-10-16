@@ -658,16 +658,22 @@ pub struct InferenceProviderStatus {
 
     /// Models the discovery loop last observed this provider serving.
     ///
-    /// Present only while `spec.modelDiscovery` is configured and its last
-    /// successful poll is within the discovery TTL. Absent when the set is
-    /// unknown, expired, or discovery is disabled: readers must treat absence
-    /// as serving nothing, so a stale set fails closed. An empty set is
-    /// present and means the backend serves no models. Bounded by the
-    /// discovery caps (256 models, 256-byte names); the order is the poll
-    /// response's and carries no meaning.
+    /// Present for a successful held set. Cleared when the set is unknown,
+    /// expired, or discovery is disabled, though clearing may lag after expiry.
+    /// Readers must require `servedModelsExpiresAt` to be in the future. An
+    /// empty set means the backend serves no models. Bounded by the discovery
+    /// caps (256 models, 256-byte names); order carries no meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("x-kubernetes-list-type" = "set"))]
     pub served_models: Option<Vec<String>>,
+
+    /// RFC 3339 UTC deadline for the corresponding `servedModels` set.
+    ///
+    /// Readers must reject the set at or after this time, even if the status
+    /// field has not yet been cleared by the next discovery round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub served_models_expires_at: Option<String>,
 
     /// Effective model-listing URL when discovery is configured.
     ///
@@ -702,8 +708,8 @@ pub struct InferenceProviderStatus {
 
 impl InferenceProviderStatus {
     /// Compare the fields written by provider reconciliation, excluding the
-    /// discovery poller's fields (error and served models) and the signals
-    /// loop's conditions.
+    /// discovery poller's fields (error, served models, and their expiry) and
+    /// the signals loop's conditions.
     pub(crate) fn matches_reconciler_status(&self, desired: &Self) -> bool {
         self.matching_sites == desired.matching_sites
             && self.model_discovery_url == desired.model_discovery_url
