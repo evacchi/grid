@@ -365,10 +365,16 @@ async fn publish_discovery_status(
     polled: &[ProviderPollStatus],
 ) {
     for provider in providers {
-        if let Some(desired) = DiscoveryStatusPatch::for_provider(provider, store, polled)
-            && let Err(error) = patch_discovery_status(api, &desired).await
-        {
-            tracing::warn!(provider = %desired.name, %error, "failed to patch model discovery status");
+        if let Some(desired) = DiscoveryStatusPatch::for_provider(provider, store, polled) {
+            match patch_discovery_status(api, provider, &desired).await {
+                Ok(()) => {},
+                Err(error) if error.is_conflict() => {
+                    tracing::debug!(provider = %desired.name, "model discovery status changed before patch");
+                },
+                Err(error) => {
+                    tracing::warn!(provider = %desired.name, %error, "failed to patch model discovery status");
+                },
+            }
         }
     }
 }
@@ -475,22 +481,26 @@ impl DiscoveryStatusPatch {
     }
 }
 
-/// Apply only the discovery-owned status fields.
+/// Apply only the discovery-owned status fields at the listed resource version.
 async fn patch_discovery_status(
     api: &Api<InferenceProvider>,
+    provider: &InferenceProvider,
     desired: &DiscoveryStatusPatch,
 ) -> Result<(), OperatorError> {
+    let version = provider.metadata.resource_version.as_deref().ok_or_else(|| {
+        OperatorError::InvalidResource(format!("InferenceProvider {} has no resourceVersion", desired.name))
+    })?;
     let apply = serde_json::json!({
         "apiVersion": "grid.praxis.fast/v1alpha1",
         "kind": "InferenceProvider",
-        "metadata": { "name": desired.name },
+        "metadata": { "name": desired.name, "resourceVersion": version },
         "status": desired.status_fields()
     });
-    api.patch_status(
+    Box::pin(api.patch_status(
         &desired.name,
         &PatchParams::apply(DISCOVERY_FIELD_MANAGER).force(),
         &Patch::Apply(apply),
-    )
+    ))
     .await?;
     Ok(())
 }
@@ -1007,6 +1017,24 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stale_discovery_status_patch_is_rejected() {
+        let api = conflicting_status_api("7");
+        let mut provider = discovery_provider("p", &serde_json::json!({}));
+        provider.metadata.resource_version = Some("7".to_owned());
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: None,
+            expires_at: None,
+        };
+
+        assert!(
+            matches!(patch_discovery_status(&api, &provider, &desired).await, Err(error) if error.is_conflict()),
+            "the stale apply must yield a conflict"
+        );
+    }
+
     #[test]
     fn urls_are_joined_with_one_slash() {
         let url = |base: &str, path: &str| {
@@ -1195,6 +1223,38 @@ mod tests {
     fn refresh(store: &ServedModelStore, updated: Vec<ProviderPoll>, ttl: Duration) {
         let expiry = ServedModelExpiry::new(ttl);
         store.refresh(updated, &expiry);
+    }
+
+    /// Mock a newer provider version rejecting the listed version's status apply.
+    fn conflicting_status_api(listed_version: &'static str) -> Api<InferenceProvider> {
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| async move {
+            use http_body_util::BodyExt as _;
+            let body = request
+                .into_body()
+                .collect()
+                .await
+                .unwrap_or_else(|_| std::process::abort())
+                .to_bytes();
+            let apply: serde_json::Value = serde_json::from_slice(&body).unwrap_or_else(|_| std::process::abort());
+            assert_eq!(
+                apply
+                    .pointer("/metadata/resourceVersion")
+                    .and_then(serde_json::Value::as_str),
+                Some(listed_version),
+                "apply must use the listed version"
+            );
+            let conflict = serde_json::json!({
+                "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                "reason": "Conflict", "message": "resourceVersion changed", "code": 409
+            });
+            Ok::<_, std::convert::Infallible>(
+                http::Response::builder()
+                    .status(409)
+                    .body(kube::client::Body::from(conflict.to_string().into_bytes()))
+                    .unwrap_or_else(|_| std::process::abort()),
+            )
+        });
+        Api::all(Client::new(service, "default"))
     }
 
     /// Verify a failed poll cannot keep or publish another source's inventory.
