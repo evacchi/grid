@@ -119,42 +119,36 @@ impl DiscoveryKey {
     }
 }
 
-/// Expiry values prepared for one poll round.
-struct ServedModelExpiry {
-    /// Monotonic instant when the poll round completed.
-    started_at: Instant,
+/// Paired clock readings taken when one provider poll completes successfully.
+#[derive(Clone, Copy)]
+struct PollCompletedAt {
+    /// Monotonic completion time for the in-memory deadline.
+    monotonic: Instant,
 
-    /// Monotonic deadline used by the in-memory store.
-    monotonic: Option<Instant>,
-
-    /// Wall-clock deadline persisted in status.
-    status: Option<String>,
-
-    /// TTL included in expiry diagnostics.
-    ttl: Duration,
+    /// Wall-clock completion time for the status deadline.
+    wall: time::OffsetDateTime,
 }
 
-impl ServedModelExpiry {
-    /// Capture both expiry boundaries for a completed poll round.
-    fn new(ttl: Duration) -> Self {
-        let wall_now = time::OffsetDateTime::now_utc();
-        let started_at = Instant::now();
+impl PollCompletedAt {
+    /// Capture both clocks at poll completion.
+    fn now() -> Self {
         Self {
-            started_at,
-            monotonic: started_at.checked_add(ttl),
-            status: status_expiry(wall_now, ttl),
-            ttl,
+            wall: time::OffsetDateTime::now_utc(),
+            monotonic: Instant::now(),
         }
     }
-}
 
-/// Format the wall-clock expiry boundary persisted for a successful model poll.
-fn status_expiry(wall_now: time::OffsetDateTime, ttl: Duration) -> Option<String> {
-    let ttl = time::Duration::try_from(ttl).ok()?;
-    wall_now
-        .checked_add(ttl)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .ok()
+    /// Calculate the paired in-memory and status expiry boundaries for this poll.
+    fn status_expiry(self, ttl: Duration) -> Option<(Instant, String)> {
+        let monotonic = self.monotonic.checked_add(ttl)?;
+        let wall_ttl = time::Duration::try_from(ttl).ok()?;
+        let status = self
+            .wall
+            .checked_add(wall_ttl)?
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok()?;
+        Some((monotonic, status))
+    }
 }
 
 /// The result of polling one named provider.
@@ -177,8 +171,8 @@ struct ProviderPollStatus {
 
 /// What one provider poll reported.
 enum PollOutcome {
-    /// The validated served-model set, including an empty set.
-    Served(ServedModels),
+    /// The validated served-model set and its completion time.
+    Served(ServedModels, PollCompletedAt),
 
     /// Polling failed; the last good set may remain held.
     Failed(PollError),
@@ -188,7 +182,7 @@ impl PollOutcome {
     /// Bounded failure reason, absent after a successful poll.
     fn failure_reason(&self) -> Option<&'static str> {
         match self {
-            Self::Served(_) => None,
+            Self::Served(..) => None,
             Self::Failed(error) => Some(error.as_reason()),
         }
     }
@@ -208,8 +202,7 @@ impl ServedModelMap {
     }
 
     /// Drop providers no longer polled and sets whose freshness deadline passed.
-    fn retain_for_refresh(&mut self, updated: &[ProviderPoll], expiry: &ServedModelExpiry) {
-        let started_at = expiry.started_at;
+    fn retain_for_refresh(&mut self, updated: &[ProviderPoll], now: Instant) {
         self.0.retain(|provider, served| {
             let maybe_provider = updated.iter().find(|ProviderPoll(_, p, _)| *p == *provider);
             match maybe_provider {
@@ -221,23 +214,23 @@ impl ServedModelMap {
                     tracing::debug!(provider, "served models provider or source changed");
                     false
                 },
-                Some(ProviderPoll(PollOutcome::Failed(_), ..)) if served.expires_at <= started_at => {
+                Some(ProviderPoll(PollOutcome::Failed(_), ..)) if served.expires_at <= now => {
                     tracing::debug!(provider, "served models expired");
                     false
                 },
-                Some(_) => served.expires_at > started_at,
+                Some(_) => served.expires_at > now,
             }
         });
     }
 
     /// Replace held sets for providers whose discovery poll succeeded.
-    fn insert_updated(&mut self, updated: Vec<ProviderPoll>, expiry: &ServedModelExpiry) {
+    fn insert_updated(&mut self, updated: Vec<ProviderPoll>, ttl: Duration) {
         for ProviderPoll(outcome, name, source) in updated {
-            if let PollOutcome::Served(discovered) = outcome {
-                let (Some(expires_at), Some(expires_at_status)) = (expiry.monotonic, expiry.status.as_deref()) else {
+            if let PollOutcome::Served(discovered, completed_at) = outcome {
+                let Some((expires_at, expires_at_status)) = completed_at.status_expiry(ttl) else {
                     tracing::warn!(
                         name,
-                        ttl = ?expiry.ttl,
+                        ?ttl,
                         "model discovery expiry exceeds the supported timestamp range"
                     );
                     continue;
@@ -250,7 +243,7 @@ impl ServedModelMap {
                         source,
                         models,
                         expires_at,
-                        expires_at_status: expires_at_status.to_owned(),
+                        expires_at_status,
                     },
                 );
             }
@@ -299,13 +292,13 @@ impl ServedModelStore {
     /// from `updated` are no longer configured and are dropped.
     ///
     /// Changes, expirations, and drops are logged at `debug`.
-    fn refresh(&self, updated: Vec<ProviderPoll>, expiry: &ServedModelExpiry) {
+    fn refresh(&self, updated: Vec<ProviderPoll>, ttl: Duration) {
         let Ok(mut map) = self.inner.write() else {
             return;
         };
 
-        map.retain_for_refresh(&updated, expiry);
-        map.insert_updated(updated, expiry);
+        map.retain_for_refresh(&updated, Instant::now());
+        map.insert_updated(updated, ttl);
     }
 }
 
@@ -348,8 +341,7 @@ pub(crate) async fn discover(
             failure_reason: outcome.failure_reason(),
         })
         .collect::<Vec<_>>();
-    let expiry = ServedModelExpiry::new(config.ttl);
-    store.refresh(polled, &expiry);
+    store.refresh(polled, config.ttl);
     publish_discovery_status(&api, &providers, store, &status_updates).await;
     Ok(())
 }
@@ -559,8 +551,9 @@ async fn poll(
 
     let outcome = match result {
         Ok(models) => {
+            let completed_at = PollCompletedAt::now();
             metrics::record_model_discovery_success(&name);
-            PollOutcome::Served(models)
+            PollOutcome::Served(models, completed_at)
         },
         Err(error) => {
             let reason = error.as_reason();
@@ -1205,6 +1198,7 @@ mod tests {
                     Some(names) => PollOutcome::Served(
                         ServedModels::try_from_names(names.iter().map(|&name| name.to_owned()))
                             .unwrap_or_else(|_| std::process::abort()),
+                        PollCompletedAt::now(),
                     ),
                     None => PollOutcome::Failed(PollError::Credential(String::new())),
                 };
@@ -1221,8 +1215,7 @@ mod tests {
     }
 
     fn refresh(store: &ServedModelStore, updated: Vec<ProviderPoll>, ttl: Duration) {
-        let expiry = ServedModelExpiry::new(ttl);
-        store.refresh(updated, &expiry);
+        store.refresh(updated, ttl);
     }
 
     /// Mock a newer provider version rejecting the listed version's status apply.
