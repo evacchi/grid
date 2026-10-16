@@ -12,15 +12,15 @@
 //!       provider not polled   → drop set
 //!       deadline passed       → drop set
 //!     patch the discovery-owned status fields
-//!       changed set           → status.servedModels, absent once expired
+//!       successful poll       → status.servedModels and servedModelsExpiresAt
+//!       expired set           → both status fields absent
 //!       failure reason        → status.modelDiscoveryError
 //! ```
 //!
-//! Freshness is absence: a set no poll renews expires after `ttl`, so a stale
-//! set fails closed and no reader compares one clock against another.
-//! `status.servedModels` is the durable hand-off to reconcile: writing it
-//! advances `resourceVersion`, so the CRDT revision of the gossiped provider
-//! record advances with the set.
+//! The in-memory store uses a monotonic TTL. The paired status expiry is a
+//! wall-clock boundary so readers can reject a status that remains uncleared
+//! between expiry and the next discovery round. `status.servedModels` and its
+//! expiry are the durable hand-off to reconcile.
 
 use std::{
     collections::BTreeMap,
@@ -77,6 +77,8 @@ impl Default for DiscoveryConfig {
     }
 }
 
+type ServedModelMap = BTreeMap<String, ServedModel>;
+
 // ---------------------------------------------------------------------------
 // ServedModelStore
 // ---------------------------------------------------------------------------
@@ -89,6 +91,38 @@ struct ServedModel {
 
     /// Deadline after which the set is no longer served.
     expires_at: Instant,
+
+    /// RFC 3339 UTC deadline persisted with the model set.
+    expires_at_status: String,
+}
+
+/// Expiry values prepared for one poll round.
+struct ServedModelExpiry {
+    /// Monotonic instant when the poll round completed.
+    started_at: Instant,
+
+    /// Monotonic deadline used by the in-memory store.
+    monotonic: Option<Instant>,
+
+    /// Wall-clock deadline persisted in status.
+    status: Option<String>,
+
+    /// TTL included in expiry diagnostics.
+    ttl: Duration,
+}
+
+impl ServedModelExpiry {
+    /// Capture both expiry boundaries for a completed poll round.
+    fn new(ttl: Duration) -> Self {
+        let wall_now = time::OffsetDateTime::now_utc();
+        let started_at = Instant::now();
+        Self {
+            started_at,
+            monotonic: started_at.checked_add(ttl),
+            status: status_expiry(wall_now, ttl),
+            ttl,
+        }
+    }
 }
 
 /// The result of polling one named provider.
@@ -145,12 +179,17 @@ impl ServedModelStore {
     /// Models `provider` serves, or `None` when unknown or expired.
     #[must_use]
     pub fn models(&self, provider: &str) -> Option<Arc<[String]>> {
+        self.fresh_inventory(provider).map(|(models, _)| models)
+    }
+
+    /// Models and their persisted expiry deadline, or `None` when unknown or expired.
+    fn fresh_inventory(&self, provider: &str) -> Option<(Arc<[String]>, String)> {
         let now = Instant::now();
         let guard = self.inner.read().ok()?;
         guard
             .get(provider)
             .filter(|held| held.expires_at > now)
-            .map(|held| Arc::clone(&held.models))
+            .map(|held| (Arc::clone(&held.models), held.expires_at_status.clone()))
     }
 
     /// Apply one round of poll results.
@@ -160,44 +199,74 @@ impl ServedModelStore {
     /// from `updated` are no longer configured and are dropped.
     ///
     /// Changes, expirations, and drops are logged at `debug`.
-    fn refresh(&self, updated: Vec<ProviderPoll>, now: Instant, ttl: Duration) {
-        let expires_at = now.checked_add(ttl);
+    fn refresh(&self, updated: Vec<ProviderPoll>, expiry: &ServedModelExpiry) {
         let Ok(mut map) = self.inner.write() else {
             return;
         };
 
-        prune_before_refresh(&mut map, &updated, now);
+        prune_before_refresh(&mut map, &updated, expiry.started_at);
         for ProviderPoll(outcome, name) in updated {
             match outcome {
-                PollOutcome::Served(discovered) => match expires_at {
-                    Some(expires_at) => {
-                        let models: Arc<[String]> = discovered.into_names().into();
-                        tracing::debug!(name, ?models, "served models refreshed");
-                        map.insert(name.clone(), ServedModel { models, expires_at });
-                    },
-                    None => {
-                        tracing::warn!(name, ?ttl, "model discovery TTL exceeds the monotonic clock range");
-                    },
-                },
+                PollOutcome::Served(discovered) => insert_served_models(&mut map, name, discovered, expiry),
                 PollOutcome::Failed(_) => {},
             }
         }
     }
 }
 
+/// Replace one provider's held set after a successful discovery response.
+fn insert_served_models(
+    map: &mut ServedModelMap,
+    name: String,
+    discovered: ServedModels,
+    expiry: &ServedModelExpiry,
+) {
+    let (Some(expires_at), Some(expires_at_status)) = (expiry.monotonic, expiry.status.as_deref()) else {
+        tracing::warn!(
+            name,
+            ttl = ?expiry.ttl,
+            "model discovery expiry exceeds the supported timestamp range"
+        );
+        return;
+    };
+    let models: Arc<[String]> = discovered.into_names().into();
+    tracing::debug!(name, ?models, "served models refreshed");
+    map.insert(
+        name,
+        ServedModel {
+            models,
+            expires_at,
+            expires_at_status: expires_at_status.to_owned(),
+        },
+    );
+}
+
+/// Format the wall-clock expiry boundary persisted for a successful model poll.
+fn status_expiry(wall_now: time::OffsetDateTime, ttl: Duration) -> Option<String> {
+    let ttl = time::Duration::try_from(ttl).ok()?;
+    wall_now
+        .checked_add(ttl)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
 /// Remove unpolled and expired entries before applying successful results.
 fn prune_before_refresh(map: &mut BTreeMap<String, ServedModel>, updated: &[ProviderPoll], now: Instant) {
     map.retain(
-        |provider: &String, served| match updated.iter().find(|ProviderPoll(_, p)| *p == *provider) {
-            None => {
-                tracing::debug!(provider, "served models dropped");
-                false
-            },
-            Some(ProviderPoll(PollOutcome::Failed(_), _)) if served.expires_at <= now => {
-                tracing::debug!(provider, "served models expired");
-                false
-            },
-            Some(_) => served.expires_at > now,
+        |provider, served| {
+            let maybe_provider =
+                updated.iter().find(|ProviderPoll(_, p)| *p == *provider);
+            match maybe_provider {
+                None => {
+                    tracing::debug!(provider, "served models dropped");
+                    false
+                },
+                Some(ProviderPoll(PollOutcome::Failed(_), _)) if served.expires_at <= now => {
+                    tracing::debug!(provider, "served models expired");
+                    false
+                },
+                Some(_) => served.expires_at > now,
+            }
         },
     );
 }
@@ -241,12 +310,13 @@ pub(crate) async fn discover(
             failure_reason: outcome.failure_reason(),
         })
         .collect::<Vec<_>>();
-    store.refresh(polled, Instant::now(), config.ttl);
+    let expiry = ServedModelExpiry::new(config.ttl);
+    store.refresh(polled, &expiry);
     publish_discovery_status(&api, &providers, store, &status_updates).await;
     Ok(())
 }
 
-/// Patch changed discovery-owned status: the failure reason and the served set.
+/// Patch changed discovery-owned status: the failure reason, served set, and expiry.
 ///
 /// `store` is read after this round's refresh, so an expired or dropped set
 /// reads as absent and is cleared from the status.
@@ -276,6 +346,9 @@ struct DiscoveryStatusPatch {
 
     /// Served-model set, or `None` when unknown, expired, or discovery is off.
     models: Option<Vec<String>>,
+
+    /// RFC 3339 expiry of the served-model set, absent with the set.
+    expires_at: Option<String>,
 }
 
 impl DiscoveryStatusPatch {
@@ -296,19 +369,22 @@ impl DiscoveryStatusPatch {
             .iter()
             .find(|status| status.name == name)
             .and_then(|status| status.failure_reason);
-        let models = provider
+        let inventory = provider
             .spec
             .model_discovery
             .as_ref()
-            .and_then(|_| store.models(name))
-            .map(|models| models.to_vec());
+            .and_then(|_| store.fresh_inventory(name));
+        let (models, expires_at) = inventory.map_or((None, None), |(models, expires_at)| {
+            (Some(models.to_vec()), Some(expires_at))
+        });
         let desired = DiscoveryStatusPatch {
             name: name.to_owned(),
             failure_reason,
             models,
+            expires_at,
         };
         let current = provider.status.as_ref();
-        if desired.has_same_error(current) && desired.has_same_models(current) {
+        if desired.has_same_error(current) && desired.has_same_models(current) && desired.has_same_expiration(current) {
             return None;
         }
         Some(desired)
@@ -340,6 +416,11 @@ impl DiscoveryStatusPatch {
         let current_error = current.and_then(|status| status.model_discovery_error.as_deref());
         current_error == self.failure_reason
     }
+
+    /// Whether `current` shows exactly this served-model expiry boundary.
+    fn has_same_expiration(&self, current: Option<&InferenceProviderStatus>) -> bool {
+        current.and_then(|status| status.served_models_expires_at.as_deref()) == self.expires_at.as_deref()
+    }
 }
 
 /// The discovery-owned status fields to apply: present fields only.
@@ -354,6 +435,9 @@ fn discovery_status_fields(desired: &DiscoveryStatusPatch) -> serde_json::Value 
     }
     if let Some(models) = &desired.models {
         status.insert("servedModels".to_owned(), serde_json::json!(models));
+    }
+    if let Some(expires_at) = &desired.expires_at {
+        status.insert("servedModelsExpiresAt".to_owned(), serde_json::json!(expires_at));
     }
     status.into()
 }
@@ -500,8 +584,8 @@ mod tests {
     fn success_replaces_set() {
         let store = ServedModelStore::new();
 
-        store.refresh(round(&[("p", Some(&["old"]))]), Instant::now(), TTL);
-        store.refresh(round(&[("p", Some(&["b", "a"]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["old"]))]), TTL);
+        refresh(&store, round(&[("p", Some(&["b", "a"]))]), TTL);
 
         assert_eq!(
             names(&store, "p"),
@@ -514,8 +598,8 @@ mod tests {
     fn empty_success_is_held() {
         let store = ServedModelStore::new();
 
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
-        store.refresh(round(&[("p", Some(&[]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
+        refresh(&store, round(&[("p", Some(&[]))]), TTL);
 
         assert_eq!(names(&store, "p"), Some(Vec::new()), "empty success should be held");
     }
@@ -524,8 +608,8 @@ mod tests {
     fn failure_keeps_last_good_set() {
         let store = ServedModelStore::new();
 
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
-        store.refresh(round(&[("p", None)]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
+        refresh(&store, round(&[("p", None)]), TTL);
 
         assert_eq!(names(&store, "p"), Some(owned(&["a"])), "failure should keep set");
     }
@@ -534,7 +618,7 @@ mod tests {
     fn unrenewed_set_expires() {
         let store = ServedModelStore::new();
 
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), Duration::ZERO);
+        refresh(&store, round(&[("p", Some(&["a"]))]), Duration::ZERO);
 
         assert_eq!(names(&store, "p"), None, "expired set should not be served");
     }
@@ -543,8 +627,8 @@ mod tests {
     fn unpolled_provider_is_dropped() {
         let store = ServedModelStore::new();
 
-        store.refresh(round(&[("p", Some(&["a"])), ("q", Some(&["b"]))]), Instant::now(), TTL);
-        store.refresh(round(&[("q", None)]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a"])), ("q", Some(&["b"]))]), TTL);
+        refresh(&store, round(&[("q", None)]), TTL);
 
         assert_eq!(names(&store, "p"), None, "unconfigured provider should be dropped");
         assert_eq!(
@@ -589,6 +673,7 @@ mod tests {
                 name: provider_name.to_owned(),
                 failure_reason: Some("credential"),
                 models: None,
+                expires_at: None,
             }),
             "a failed poll should set its reason"
         );
@@ -614,6 +699,7 @@ mod tests {
                 name: provider_name.to_owned(),
                 failure_reason: None,
                 models: None,
+                expires_at: None,
             }),
             "a successful poll should clear the previous error"
         );
@@ -624,6 +710,7 @@ mod tests {
                 name: provider_name.to_owned(),
                 failure_reason: None,
                 models: None,
+                expires_at: None,
             }),
             "removing model discovery should clear the previous error"
         );
@@ -632,7 +719,7 @@ mod tests {
     #[test]
     fn success_writes_the_served_set() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["b", "a"]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["b", "a"]))]), TTL);
 
         let provider = &discovery_provider("p", &serde_json::json!({}));
         let polled = &[];
@@ -644,6 +731,7 @@ mod tests {
                 name: "p".to_owned(),
                 failure_reason: None,
                 models: Some(owned(&["b", "a"])),
+                expires_at: stored_expiry(&store, "p"),
             }),
             "a changed set should be written as polled"
         );
@@ -652,7 +740,7 @@ mod tests {
     #[test]
     fn an_empty_set_is_written_not_cleared() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&[]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&[]))]), TTL);
 
         let provider = &discovery_provider("p", &serde_json::json!({}));
         let polled = &[];
@@ -668,9 +756,9 @@ mod tests {
     #[test]
     fn unchanged_status_is_not_patched() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
 
-        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
+        let provider = discovery_provider("p", &status_with_models(&store, &["a"]));
 
         let polled = &[];
         assert_eq!(
@@ -683,9 +771,9 @@ mod tests {
     #[test]
     fn a_reordered_set_is_not_a_change() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["a", "b"]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a", "b"]))]), TTL);
 
-        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["b", "a"] }));
+        let provider = discovery_provider("p", &status_with_models(&store, &["b", "a"]));
 
         let polled = &[];
         assert_eq!(
@@ -698,7 +786,7 @@ mod tests {
     #[test]
     fn a_substituted_model_is_a_change() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["a", "b"]))]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a", "b"]))]), TTL);
 
         let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a", "c"] }));
 
@@ -709,6 +797,7 @@ mod tests {
                 name: "p".to_owned(),
                 failure_reason: None,
                 models: Some(owned(&["a", "b"])),
+                expires_at: stored_expiry(&store, "p"),
             }),
             "a substituted model must be written"
         );
@@ -717,10 +806,10 @@ mod tests {
     #[test]
     fn failure_keeps_the_held_set_in_status() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), TTL);
-        store.refresh(round(&[("p", None)]), Instant::now(), TTL);
+        refresh(&store, round(&[("p", Some(&["a"]))]), TTL);
+        refresh(&store, round(&[("p", None)]), TTL);
 
-        let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
+        let provider = discovery_provider("p", &status_with_models(&store, &["a"]));
         let failed = vec![ProviderPollStatus {
             name: "p".to_owned(),
             failure_reason: Some("unreachable"),
@@ -732,6 +821,7 @@ mod tests {
                 name: "p".to_owned(),
                 failure_reason: Some("unreachable"),
                 models: Some(owned(&["a"])),
+                expires_at: stored_expiry(&store, "p"),
             }),
             "a failed poll sets its reason and keeps the held set"
         );
@@ -740,7 +830,7 @@ mod tests {
     #[test]
     fn expired_set_is_cleared_from_status() {
         let store = ServedModelStore::new();
-        store.refresh(round(&[("p", Some(&["a"]))]), Instant::now(), Duration::ZERO);
+        refresh(&store, round(&[("p", Some(&["a"]))]), Duration::ZERO);
 
         let provider = discovery_provider("p", &serde_json::json!({ "servedModels": ["a"] }));
         let failed = vec![ProviderPollStatus {
@@ -754,6 +844,7 @@ mod tests {
                 name: "p".to_owned(),
                 failure_reason: Some("unreachable"),
                 models: None,
+                expires_at: None,
             }),
             "an expired set must leave the status: fail closed"
         );
@@ -762,7 +853,13 @@ mod tests {
     #[test]
     fn removed_discovery_clears_the_served_set() {
         let store = ServedModelStore::new();
-        let provider = test_provider_with_status("p", &serde_json::json!({ "servedModels": ["a"] }));
+        let provider = test_provider_with_status(
+            "p",
+            &serde_json::json!({
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": "2030-01-01T00:00:00Z"
+            }),
+        );
 
         let polled = &[];
         assert_eq!(
@@ -771,6 +868,7 @@ mod tests {
                 name: "p".to_owned(),
                 failure_reason: None,
                 models: None,
+                expires_at: None,
             }),
             "disabling discovery must clear the served set"
         );
@@ -782,16 +880,22 @@ mod tests {
             name: "p".to_owned(),
             failure_reason: Some("timeout"),
             models: Some(owned(&["a"])),
+            expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
         };
         assert_eq!(
             discovery_status_fields(&with_both),
-            serde_json::json!({ "modelDiscoveryError": "timeout", "servedModels": ["a"] })
+            serde_json::json!({
+                "modelDiscoveryError": "timeout",
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": "2030-01-01T00:00:00Z"
+            })
         );
 
         let cleared = DiscoveryStatusPatch {
             name: "p".to_owned(),
             failure_reason: None,
             models: None,
+            expires_at: None,
         };
         assert_eq!(
             discovery_status_fields(&cleared),
@@ -977,8 +1081,24 @@ mod tests {
             .collect()
     }
 
+    fn refresh(store: &ServedModelStore, updated: Vec<ProviderPoll>, ttl: Duration) {
+        let expiry = ServedModelExpiry::new(ttl);
+        store.refresh(updated, &expiry);
+    }
+
     fn owned(names: &[&str]) -> Vec<String> {
         names.iter().map(|&n| n.to_owned()).collect()
+    }
+
+    fn stored_expiry(store: &ServedModelStore, provider: &str) -> Option<String> {
+        store.fresh_inventory(provider).map(|(_, expires_at)| expires_at)
+    }
+
+    fn status_with_models(store: &ServedModelStore, models: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "servedModels": models,
+            "servedModelsExpiresAt": stored_expiry(store, "p")
+        })
     }
 
     fn names(store: &ServedModelStore, provider: &str) -> Option<Vec<String>> {

@@ -834,6 +834,7 @@ async fn update_status(
         phase,
         reason,
         served_models: None,
+        served_models_expires_at: None,
     };
 
     if provider
@@ -877,6 +878,7 @@ mod tests {
             phase: ProviderPhase::Available,
             reason: None,
             served_models: None,
+            served_models_expires_at: None,
         };
         assert!(baseline.matches_reconciler_status(&baseline));
 
@@ -904,6 +906,7 @@ mod tests {
             phase: ProviderPhase::Available,
             reason: None,
             served_models: None,
+            served_models_expires_at: None,
         };
 
         let changed_discovery_error = InferenceProviderStatus {
