@@ -153,6 +153,29 @@ impl ModelInventory {
     pub(crate) fn is_static(&self) -> bool {
         matches!(self, Self::Static(_))
     }
+
+    /// Expiry deadline for discovered names, absent for a static inventory.
+    #[must_use]
+    pub(crate) fn expires_at(&self) -> Option<&str> {
+        match self {
+            Self::Static(_) => None,
+            Self::Discovered(inventory) => Some(&inventory.expires_at),
+        }
+    }
+
+    /// Create a discovered inventory with its deadline and producing generation.
+    #[cfg(test)]
+    pub(crate) fn discovered(
+        models: Arc<[String]>,
+        expires_at: String,
+        observed_generation: i64,
+    ) -> Self {
+        Self::Discovered(DiscoveredModelInventory {
+            models,
+            expires_at,
+            observed_generation,
+        })
+    }
 }
 
 /// Identity of the provider and concrete endpoint used for discovery.

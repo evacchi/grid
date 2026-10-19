@@ -2417,6 +2417,7 @@ async fn reconcile_routing_overlay_inner(
                 continue;
             },
         };
+        routing_overlay::filter_for_gateway_candidate_expiry(&mut overlay, gw_ref.supports_model_discovery_contract());
         let (cluster_endpoints, derived_summary, refused) = gateway_cluster_endpoints(
             gw_ref,
             &overlay.candidates,
@@ -9631,6 +9632,7 @@ mod tests {
             name: name.to_owned(),
             namespace: ns.to_owned(),
             site_name: None,
+            model_discovery_contract_version: None,
             provider_hop_endpoints: Vec::new(),
             praxis_config: None,
         }

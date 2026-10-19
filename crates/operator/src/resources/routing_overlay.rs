@@ -57,7 +57,7 @@ use crate::{
         inference_provider::{InferenceProvider, ProviderPhase},
     },
     resources::geography::{AdmissionState, LocalityTier},
-    served_models::ServedModelStore,
+    served_models::{ModelInventory, ServedModelStore},
     swim::{MemberStatus, MembershipSnapshot},
 };
 // ---------------------------------------------------------------------------
@@ -274,6 +274,7 @@ fn bare_candidate(kind: &str, name: &str, site: &str, cluster: &str, fresh: bool
         rank: None,
         selection_group: None,
         traffic_weight: None,
+        expires_at: None,
         capacity_weight: 1,
     }
 }
@@ -911,6 +912,14 @@ pub struct RoutingCandidate {
     /// CRDT provider phase; `Degraded` maps to `false`.
     pub fresh: bool,
 
+    /// RFC 3339 UTC deadline for a discovered model inventory.
+    ///
+    /// Gateways that support the model discovery contract must stop selecting
+    /// this candidate at the deadline, applying the contract's clock-skew
+    /// allowance. Static candidates omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+
     /// Credential reference projected by the operator, when `spec.auth`
     /// declares a bearer-token strategy.
     ///
@@ -962,6 +971,18 @@ pub struct RoutingCandidate {
     /// Relative provider capacity retained for static placement.
     #[serde(skip)]
     pub capacity_weight: u32,
+}
+
+/// Remove discovered candidates when a gateway has not declared expiry support.
+///
+/// Both routable candidates and the non-wire excluded list are filtered because
+/// the generated Praxis config consumes both lists.
+pub(crate) fn filter_for_gateway_candidate_expiry(overlay: &mut RoutingOverlay, supported: bool) {
+    if supported {
+        return;
+    }
+    overlay.candidates.retain(|candidate| candidate.expires_at.is_none());
+    overlay.excluded.retain(|candidate| candidate.expires_at.is_none());
 }
 
 /// The full routing overlay for a single [`GridNetwork`].
@@ -1750,32 +1771,41 @@ fn resolve_sites(provider: &InferenceProvider, network_sites: &[&GridSite], owni
 ///
 /// Returns an error if the provider has no metadata name or any model
 /// name is blank or whitespace-only.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential steps: name extraction, model validation, site resolution, credential projection, and candidate construction"
-)]
 fn candidates_from_provider(
     provider: &InferenceProvider,
     site_resolution: &SiteResolution,
     served_model_store: &ServedModelStore,
+) -> Result<Vec<RoutingCandidate>, String> {
+    provider
+        .metadata
+        .name
+        .as_deref()
+        .ok_or_else(|| "InferenceProvider has no name".to_owned())?;
+    let Some(model_inventory) = served_model_store.select_for(provider) else {
+        return Ok(Vec::new());
+    };
+    candidates_from_inventory(provider, site_resolution, &model_inventory)
+}
+
+/// Build provider candidates from an already selected static or discovered inventory.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential steps: name validation, site resolution, credential projection, and candidate construction"
+)]
+fn candidates_from_inventory(
+    provider: &InferenceProvider,
+    site_resolution: &SiteResolution,
+    model_inventory: &ModelInventory,
 ) -> Result<Vec<RoutingCandidate>, String> {
     let provider_name = provider
         .metadata
         .name
         .as_deref()
         .ok_or_else(|| "InferenceProvider has no name".to_owned())?;
-
     // Compared untrimmed, because that is the name the candidate carries: two equal
     // names at one provider collapse to a single routing candidate, so the second is
     // silently lost rather than served.
     let mut seen = BTreeSet::new();
-    let Some(model_inventory) = served_model_store.select_for(provider) else {
-        return Ok(Vec::new());
-    };
-    // FIXME: we are currently only wiring static config, even if we support discovery.
-    if !model_inventory.is_static() {
-        return Ok(Vec::new());
-    }
     for model in model_inventory.models() {
         if model.trim().is_empty() {
             return Err(format!("provider {provider_name} has a blank model name"));
@@ -1819,6 +1849,7 @@ fn candidates_from_provider(
                 site: (*site).to_owned(),
                 cluster: cluster.to_owned(),
                 fresh,
+                expires_at: model_inventory.expires_at().map(str::to_owned),
                 credential: credential.clone(),
                 stable_id: None,
                 admission_state: None,
@@ -2146,6 +2177,7 @@ mod tests {
             rank: None,
             selection_group: None,
             traffic_weight: None,
+            expires_at: None,
             capacity_weight: 1,
         }
     }
@@ -4062,6 +4094,89 @@ mod tests {
         assert!(
             candidates.is_empty(),
             "dynamic providers without a fresh inventory must not route spec.models"
+        );
+    }
+
+    #[test]
+    fn discovered_candidates_carry_the_inventory_expiry() {
+        let provider = test_provider("dynamic-provider", "net", &["configured-model"]);
+        let inventory = ModelInventory::discovered(
+            vec!["discovered-model".to_owned()].into(),
+            "2030-01-01T00:00:00Z".to_owned(),
+            1,
+        );
+        let candidates = candidates_from_inventory(&provider, &SiteResolution::Unavailable, &inventory)
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert_eq!(candidates.len(), 1, "fresh discovered name must produce a candidate");
+        let candidate = candidates.first().unwrap_or_else(|| std::process::abort());
+        assert_eq!(
+            candidate.name, "discovered-model",
+            "candidate must use discovered inventory"
+        );
+        assert_eq!(candidate.expires_at.as_deref(), Some("2030-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn gateway_without_expiry_support_receives_only_static_candidates() {
+        let mut dynamic_candidate = bare_candidate(CANDIDATE_KIND, "dynamic-model", "site", "cluster", true);
+        dynamic_candidate.expires_at = Some("2030-01-01T00:00:00Z".to_owned());
+        let mut overlay = RoutingOverlay {
+            network: "net".to_owned(),
+            local_site: "site".to_owned(),
+            candidates: vec![
+                bare_candidate(CANDIDATE_KIND, "static-model", "site", "cluster", true),
+                dynamic_candidate.clone(),
+            ],
+            excluded: vec![dynamic_candidate],
+            selection_policy: None,
+            generated_at: None,
+        };
+
+        filter_for_gateway_candidate_expiry(&mut overlay, false);
+
+        assert_eq!(
+            overlay.candidates.len(),
+            1,
+            "unsupported gateway must receive static candidates only"
+        );
+        assert_eq!(
+            overlay.candidates.first().map(|candidate| candidate.name.as_str()),
+            Some("static-model")
+        );
+        assert!(
+            overlay.excluded.is_empty(),
+            "dynamic names must not enter generated serving config"
+        );
+    }
+
+    #[test]
+    fn gateway_with_expiry_support_receives_dynamic_candidates() {
+        let mut candidate = bare_candidate(CANDIDATE_KIND, "dynamic-model", "site", "cluster", true);
+        candidate.expires_at = Some("2030-01-01T00:00:00Z".to_owned());
+        let mut overlay = RoutingOverlay {
+            network: "net".to_owned(),
+            local_site: "site".to_owned(),
+            candidates: vec![candidate],
+            excluded: Vec::new(),
+            selection_policy: None,
+            generated_at: None,
+        };
+
+        filter_for_gateway_candidate_expiry(&mut overlay, true);
+
+        assert_eq!(
+            overlay.candidates.len(),
+            1,
+            "supported gateway must receive dynamic candidates"
+        );
+        assert_eq!(
+            overlay
+                .candidates
+                .first()
+                .and_then(|selected| selected.expires_at.as_deref()),
+            Some("2030-01-01T00:00:00Z"),
+            "dynamic candidate expiry must be preserved"
         );
     }
 
