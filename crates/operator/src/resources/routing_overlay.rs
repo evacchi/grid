@@ -311,14 +311,37 @@ fn remote_tool_names(provider: &crdt::ProviderState) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Convert one remote CRDT provider record to [`RoutingCandidate`]s.
-///
-/// Produces one candidate per model (`inference_model`) and one per
-/// tool (`mcp_tool`).  Returns an empty `Vec` when the provider phase
-/// is [`crdt::ProviderPhase::Unavailable`] or has no models/tools.
-pub(crate) fn remote_crdt_provider_to_candidates(provider: &crdt::ProviderState) -> Vec<RoutingCandidate> {
+/// Convert a remote provider using its complete, fresh SWIM inventory when it has one.
+#[expect(
+    clippy::too_many_lines,
+    reason = "model expiry and static tool candidates share provider routing metadata"
+)]
+pub(crate) fn remote_crdt_provider_to_candidates(
+    provider: &crdt::ProviderState,
+    inventories: &[swim::ModelInventory],
+    grid_id: &str,
+) -> Vec<RoutingCandidate> {
     let Some(fresh) = crdt_phase_to_fresh(&provider.phase) else {
         return Vec::new();
+    };
+    let inventory = inventories.iter().find(|inventory| {
+        inventory.grid_id == grid_id
+            && inventory.network_id == provider.network_id
+            && inventory.origin_site == provider.site_id
+            && inventory.provider_id == provider.provider_id
+    });
+    let (models, expires_at) = if let Some(inventory) = inventory {
+        let timestamp_nanos = i128::from(inventory.expires_at_ms).checked_mul(1_000_000);
+        if timestamp_nanos.is_none_or(|expires_at| expires_at <= time::OffsetDateTime::now_utc().unix_timestamp_nanos())
+        {
+            return Vec::new();
+        }
+        let Some(expires_at) = format_inventory_expiry(inventory.expires_at_ms) else {
+            return Vec::new();
+        };
+        (inventory.models.as_slice(), Some(expires_at))
+    } else {
+        (provider.models.as_slice(), None)
     };
     let cw = if crdt::is_valid_capacity_weight(provider.capacity_weight) {
         provider.capacity_weight
@@ -331,10 +354,13 @@ pub(crate) fn remote_crdt_provider_to_candidates(provider: &crdt::ProviderState)
         c
     };
     let tools = remote_tool_names(provider);
-    provider
-        .models
+    models
         .iter()
-        .map(|m| make(CANDIDATE_KIND, m))
+        .map(|model| {
+            let mut candidate = make(CANDIDATE_KIND, model);
+            candidate.expires_at.clone_from(&expires_at);
+            candidate
+        })
         .chain(
             tools
                 .into_iter()
@@ -342,6 +368,15 @@ pub(crate) fn remote_crdt_provider_to_candidates(provider: &crdt::ProviderState)
                 .map(|tool| make(CANDIDATE_KIND_MCP_TOOL, tool)),
         )
         .collect()
+}
+
+/// Convert a signed inventory's Unix-millisecond expiry to the overlay RFC3339 form.
+fn format_inventory_expiry(expires_at_ms: u64) -> Option<String> {
+    let timestamp_nanos = i128::from(expires_at_ms).checked_mul(1_000_000)?;
+    time::OffsetDateTime::from_unix_timestamp_nanos(timestamp_nanos)
+        .ok()?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
 }
 
 /// Derive a [`ProjectedCredential`] from a provider's `spec.auth`.
@@ -1301,6 +1336,8 @@ pub fn render_routing_overlay(
         providers,
         tool_providers,
         remote_crdt_providers,
+        &[],
+        "",
         local_site,
         None,
         metrics,
@@ -1385,6 +1422,8 @@ pub fn render_routing_overlay_with_admission(
     providers: &[InferenceProvider],
     tool_providers: &[AgentToolProvider],
     remote_crdt_providers: &[crdt::ProviderState],
+    remote_model_inventories: &[swim::ModelInventory],
+    grid_id: &str,
     local_site: &str,
     owning_site: Option<&str>,
     metrics: Option<&HashMap<&str, scoring::BackendMetrics>>,
@@ -1447,7 +1486,11 @@ pub fn render_routing_overlay_with_admission(
         let access_result = evaluate_access_policy(&access_policy, consumer_site_labels);
         match access_result {
             AccessPolicyResult::Allow => {
-                candidates.extend(remote_crdt_provider_to_candidates(provider));
+                candidates.extend(remote_crdt_provider_to_candidates(
+                    provider,
+                    remote_model_inventories,
+                    grid_id,
+                ));
             },
             AccessPolicyResult::Deny => {
                 tracing::debug!(
@@ -1459,7 +1502,11 @@ pub fn render_routing_overlay_with_admission(
             },
             AccessPolicyResult::Unknown => {
                 if provider.access_policy.match_labels.is_empty() {
-                    candidates.extend(remote_crdt_provider_to_candidates(provider));
+                    candidates.extend(remote_crdt_provider_to_candidates(
+                        provider,
+                        remote_model_inventories,
+                        grid_id,
+                    ));
                 } else {
                     tracing::debug!(
                         provider_id = %provider.provider_id,
@@ -5879,14 +5926,68 @@ mod tests {
             crdt::ProviderPhase::Available,
             &["model-a", "model-b"],
         );
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert_eq!(candidates.len(), 2, "two models must produce two candidates");
+    }
+
+    #[test]
+    fn remote_dynamic_provider_uses_complete_inventory_names_and_expiry() {
+        let provider = make_crdt_provider(
+            "remote-site",
+            "cluster-1",
+            crdt::ProviderPhase::Available,
+            &["configured-fallback"],
+        );
+        let expires_at_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp())
+            .unwrap_or_else(|_| std::process::abort())
+            .saturating_add(60)
+            .saturating_mul(1_000);
+        let inventory = swim::ModelInventory {
+            origin_site: "remote-site".to_owned(),
+            grid_id: "grid-a".to_owned(),
+            network_id: "net".to_owned(),
+            provider_id: "prov-1".to_owned(),
+            provider_uid: "uid-a".to_owned(),
+            revision: 2,
+            expires_at_ms,
+            models: vec!["discovered-model".to_owned()],
+        };
+
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[inventory], "grid-a");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "discovered-model");
+        assert!(candidates[0].expires_at.is_some());
+    }
+
+    #[test]
+    fn expired_remote_dynamic_inventory_produces_no_candidates() {
+        let provider = make_crdt_provider(
+            "remote-site",
+            "cluster-1",
+            crdt::ProviderPhase::Available,
+            &["configured-model"],
+        );
+        let inventory = swim::ModelInventory {
+            origin_site: "remote-site".to_owned(),
+            grid_id: "grid-a".to_owned(),
+            network_id: "net".to_owned(),
+            provider_id: "prov-1".to_owned(),
+            provider_uid: "uid-a".to_owned(),
+            revision: 2,
+            expires_at_ms: 1,
+            models: vec!["discovered-model".to_owned()],
+        };
+
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[inventory], "grid-a");
+
+        assert!(candidates.is_empty());
     }
 
     #[test]
     fn remote_provider_site_and_cluster_preserved_in_candidates() {
         let provider = make_crdt_provider("remote-site", "cluster-1", crdt::ProviderPhase::Available, &["model-a"]);
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert_eq!(candidates.len(), 1, "one model produces one candidate");
         let c = candidates.first().unwrap_or_else(|| std::process::abort());
         assert_eq!(c.site, "remote-site", "site must be taken from site_id");
@@ -5902,7 +6003,7 @@ mod tests {
             crdt::ProviderPhase::Unavailable,
             &["model-a"],
         );
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert!(candidates.is_empty(), "Unavailable phase must produce empty candidates");
     }
 
@@ -8107,7 +8208,7 @@ mod tests {
             revision: 1,
             writer_id: "site-a".to_owned(),
         };
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         let mut tuples: Vec<_> = candidates
             .iter()
             .map(|c| (c.kind.as_str(), c.name.as_str(), c.site.as_str(), c.cluster.as_str()))
@@ -8140,7 +8241,7 @@ mod tests {
             revision: 1,
             writer_id: "site-b".to_owned(),
         };
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         let mut tuples: Vec<_> = candidates
             .iter()
             .map(|c| (c.kind.as_str(), c.name.as_str(), c.site.as_str(), c.cluster.as_str()))
@@ -8173,7 +8274,7 @@ mod tests {
             revision: 1,
             writer_id: "site-a".to_owned(),
         };
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert!(candidates.is_empty(), "unavailable provider must produce no candidates");
     }
 
@@ -8181,7 +8282,7 @@ mod tests {
     fn crdt_provider_pending_emits_no_tool_candidates() {
         let mut provider = make_crdt_provider("site-a", "pending-tools", crdt::ProviderPhase::Pending, &[]);
         provider.tools = vec!["search".to_owned()];
-        assert!(remote_crdt_provider_to_candidates(&provider).is_empty());
+        assert!(remote_crdt_provider_to_candidates(&provider, &[], "").is_empty());
     }
 
     #[test]
@@ -8193,7 +8294,7 @@ mod tests {
             "search".to_owned(),
             "x".repeat(MAX_CANDIDATE_IDENTIFIER_LEN + 1),
         ];
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "search");
     }
@@ -8215,7 +8316,7 @@ mod tests {
             revision: 1,
             writer_id: "site-a".to_owned(),
         };
-        let candidates = remote_crdt_provider_to_candidates(&provider);
+        let candidates = remote_crdt_provider_to_candidates(&provider, &[], "");
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].capacity_weight, 42,

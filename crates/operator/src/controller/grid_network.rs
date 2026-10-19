@@ -1643,10 +1643,12 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
         memory.retain_network_keys(name, admission_keys.iter().cloned());
     }
 
+    let grid_id = resolve_grid_id(&network);
     let remote_crdt_providers: Vec<crdt::ProviderState> = ctx
         .swim()
         .map(|swim| collect_remote_crdt_providers(swim, name))
         .unwrap_or_default();
+    let remote_model_inventories = ctx.swim().map(|swim| swim.model_inventories()).unwrap_or_default();
 
     // Obtain a live membership snapshot here - used both for staleness override below
     // and for phase determination after the overlay step.
@@ -1669,10 +1671,12 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
         serving_retry,
     } = Box::pin(reconcile_routing_overlay_inner(
         &network,
+        &grid_id,
         client,
         &providers,
         &tool_providers,
         &remote_crdt_providers,
+        &remote_model_inventories,
         &ctx.served_models,
         &raw_metrics,
         &scoring_weights,
@@ -1682,7 +1686,6 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
     ))
     .await?;
 
-    let grid_id = resolve_grid_id(&network);
     let identity = site_identity_status(
         &network,
         client,
@@ -2324,10 +2327,12 @@ fn site_phases(sites: &[GridSite]) -> impl Iterator<Item = (&str, &'static str)>
 )]
 async fn reconcile_routing_overlay_inner(
     network: &GridNetwork,
+    grid_id: &str,
     client: &Client,
     providers: &[InferenceProvider],
     tool_providers: &[AgentToolProvider],
     remote_crdt_providers: &[crdt::ProviderState],
+    remote_model_inventories: &[swim::ModelInventory],
     served_model_store: &served_models::ServedModelStore,
     raw_metrics: &HashMap<String, scoring::BackendMetrics>,
     scoring_weights: &scoring::ScoringWeights,
@@ -2390,6 +2395,8 @@ async fn reconcile_routing_overlay_inner(
             providers,
             tool_providers,
             &eligible_remote_owned,
+            remote_model_inventories,
+            grid_id,
             local_site,
             owning_site,
             metrics_arg,
@@ -5153,6 +5160,10 @@ fn provider_state_broadcast(
     clippy::too_many_arguments,
     reason = "tool providers and served-model state are distinct inputs alongside existing inference parameters"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "provider records and their UID extension must describe the same snapshot"
+)]
 fn publish_real_provider_state(
     swim: &SwimHandle,
     network_name: &str,
@@ -5165,6 +5176,7 @@ fn publish_real_provider_state(
     let site_name = swim.site_name();
     let mut snap = crdt::GridStateSnapshot::new(site_name.to_owned());
     let mut max_revision: u64 = 0;
+    let mut provider_uids = BTreeMap::new();
 
     for provider in providers {
         if provider.spec.grid_network_ref != network_name {
@@ -5173,6 +5185,14 @@ fn publish_real_provider_state(
         let routing_id = routing_overlay::routing_identity(provider).unwrap_or("");
         let metrics = raw_metrics.get(routing_id).copied();
         if let Some(state) = provider_state_from_kube(provider, network_name, site_name, metrics, served_model_store) {
+            if provider.spec.model_discovery.is_some()
+                && let Some(uid) = provider.metadata.uid.as_deref()
+            {
+                provider_uids.insert(
+                    format!("{}/{}/{}", state.network_id, state.site_id, state.provider_id),
+                    uid.to_owned(),
+                );
+            }
             upsert_provider_with_capabilities(&mut snap, &mut max_revision, state);
         }
     }
@@ -5188,7 +5208,8 @@ fn publish_real_provider_state(
         }
     }
 
-    let mut bc = provider_state_broadcast(site_name, grid_id, max_revision, snap, swim.gateway_address());
+    let mut bc = provider_state_broadcast(site_name, grid_id, max_revision, snap, swim.gateway_address())
+        .with_provider_uids(provider_uids);
     fit_provider_tools_to_swim_budget(&mut bc);
     if let Err(e) = swim.publish_state_broadcast(bc) {
         tracing::debug!(error = %e, "CRDT broadcast channel unavailable (runtime not yet receiving)");
@@ -11478,7 +11499,7 @@ mod tests {
             ("site-a", "tool/mcp-server"),
             "the eligible provider must retain its source site and tool identity"
         );
-        let excluded_candidates = routing_overlay::remote_crdt_provider_to_candidates(&inactive_provider);
+        let excluded_candidates = routing_overlay::remote_crdt_provider_to_candidates(&inactive_provider, &[], "");
         assert!(
             !excluded_candidates.is_empty(),
             "the inactive-site provider carries tools so it would produce candidates if not filtered"
