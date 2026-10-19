@@ -416,7 +416,7 @@ impl DiscoveryStatusPatch {
             expires_at,
         };
         let current = provider.status.as_ref();
-        if desired.has_same_error(current) && desired.has_same_models(current) && desired.has_same_expiration(current) {
+        if desired.has_same_error(current) && desired.has_same_expiration(current) && desired.has_same_models(current) {
             return None;
         }
         Some(desired)
@@ -425,20 +425,17 @@ impl DiscoveryStatusPatch {
     /// Whether `current` shows exactly this patch's served-model set.
     ///
     /// Model lists are compared as sets: poll response order is not stable,
-    /// so a reordered set is not a change. Both sides are sorted for the
-    /// comparison only — the store and the status keep the order they were
-    /// given — and sorting also keeps duplicate entries from comparing
-    /// equal.
+    /// so a reordered set is not a change. The desired list is validated and
+    /// duplicate-free, so equal lengths plus membership checks also detect
+    /// extra entries in the current status.
     fn has_same_models(&self, current: Option<&InferenceProviderStatus>) -> bool {
         let current_models = current.and_then(|status| status.served_models.as_deref());
-        let sorted = |models: &[String]| {
-            let mut names = models.to_vec();
-            names.sort_unstable();
-            names
-        };
         match (current_models, self.models.as_deref()) {
             (None, None) => true,
-            (Some(current_names), Some(desired_names)) => sorted(current_names) == sorted(desired_names),
+            (Some(current_names), Some(desired_names)) => {
+                current_names.len() == desired_names.len()
+                    && desired_names.iter().all(|name| current_names.contains(name))
+            },
             _ => false,
         }
     }
