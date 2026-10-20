@@ -342,7 +342,7 @@ pub(crate) async fn discover(
         })
         .collect::<Vec<_>>();
     store.refresh(polled, config.ttl);
-    publish_discovery_status(&api, &providers, store, &status_updates).await;
+    publish_discovery_status(&api, &providers, store, &status_updates, config.interval).await;
     Ok(())
 }
 
@@ -355,17 +355,21 @@ async fn publish_discovery_status(
     providers: &[InferenceProvider],
     store: &ServedModelStore,
     polled: &[ProviderPollStatus],
+    interval: Duration,
 ) {
     for provider in providers {
         if let Some(desired) = DiscoveryStatusPatch::for_provider(provider, store, polled) {
-            match patch_discovery_status(api, provider, &desired).await {
-                Ok(()) => {},
-                Err(error) if error.is_conflict() => {
-                    tracing::debug!(provider = %desired.name, "model discovery status changed before patch");
-                },
-                Err(error) => {
-                    tracing::warn!(provider = %desired.name, %error, "failed to patch model discovery status");
-                },
+            let current = provider.status.as_ref();
+            if desired.should_apply_patch(current, interval) {
+                match patch_discovery_status(api, provider, &desired).await {
+                    Ok(()) => {},
+                    Err(error) if error.is_conflict() => {
+                        tracing::debug!(provider = %desired.name, "model discovery status changed before patch");
+                    },
+                    Err(error) => {
+                        tracing::warn!(provider = %desired.name, %error, "failed to patch model discovery status");
+                    },
+                }
             }
         }
     }
@@ -416,7 +420,7 @@ impl DiscoveryStatusPatch {
             expires_at,
         };
         let current = provider.status.as_ref();
-        if desired.has_same_error(current) && desired.has_same_expiration(current) && desired.has_same_models(current) {
+        if desired.matches_status(current) {
             return None;
         }
         Some(desired)
@@ -449,6 +453,36 @@ impl DiscoveryStatusPatch {
     /// Whether `current` shows exactly this served-model expiry boundary.
     fn has_same_expiration(&self, current: Option<&InferenceProviderStatus>) -> bool {
         current.and_then(|status| status.served_models_expires_at.as_deref()) == self.expires_at.as_deref()
+    }
+
+    /// Whether to apply this desired status patch now.
+    ///
+    /// Changed fields and expiry clearing always apply. Expiry-only renewals
+    /// are skipped while the persisted boundary remains more than one interval
+    /// away. Missing or invalid persisted expiries need a patch.
+    fn should_apply_patch(&self, current: Option<&InferenceProviderStatus>, interval: Duration) -> bool {
+        if self.expires_at.is_none() || !self.has_same_error(current) || !self.has_same_models(current) {
+            return true;
+        }
+        let Some(expiration) = current.and_then(|status| status.served_models_expires_at.as_deref()) else {
+            return true;
+        };
+        let Ok(expiration) = time::OffsetDateTime::parse(expiration, &time::format_description::well_known::Rfc3339)
+        else {
+            return true;
+        };
+        let Ok(interval) = time::Duration::try_from(interval) else {
+            return true;
+        };
+        let Some(renew_after) = time::OffsetDateTime::now_utc().checked_add(interval) else {
+            return true;
+        };
+        expiration <= renew_after
+    }
+
+    /// Whether the patch already matches the discovery-owned status fields.
+    fn matches_status(&self, current: Option<&InferenceProviderStatus>) -> bool {
+        self.has_same_error(current) && self.has_same_expiration(current) && self.has_same_models(current)
     }
 
     /// Build the discovery-owned status fields to apply.
@@ -850,6 +884,116 @@ mod tests {
             DiscoveryStatusPatch::for_provider(&provider, &store, polled),
             None,
             "an unchanged set should not be patched"
+        );
+    }
+
+    #[test]
+    fn expiry_only_renewal_is_skipped_when_persisted_deadline_is_far() {
+        let provider = discovery_provider(
+            "p",
+            &serde_json::json!({
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": expiry_after(Duration::from_secs(3600))
+            }),
+        );
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: Some(owned(&["a"])),
+            expires_at: Some(expiry_after(Duration::from_secs(7200))),
+        };
+
+        assert!(
+            !desired.should_apply_patch(provider.status.as_ref(), Duration::from_secs(60)),
+            "an expiry-only renewal should be skipped while the current boundary is far away"
+        );
+    }
+
+    #[test]
+    fn expiry_renewal_is_applied_when_persisted_deadline_is_near() {
+        let provider = discovery_provider(
+            "p",
+            &serde_json::json!({
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": expiry_after(Duration::from_secs(30))
+            }),
+        );
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: Some(owned(&["a"])),
+            expires_at: Some(expiry_after(Duration::from_secs(3600))),
+        };
+
+        assert!(
+            desired.should_apply_patch(provider.status.as_ref(), Duration::from_secs(60)),
+            "an expiry-only renewal should be applied within one discovery interval"
+        );
+    }
+
+    #[test]
+    fn changed_models_are_applied_even_when_persisted_deadline_is_far() {
+        let provider = discovery_provider(
+            "p",
+            &serde_json::json!({
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": expiry_after(Duration::from_secs(3600))
+            }),
+        );
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: Some(owned(&["b"])),
+            expires_at: Some(expiry_after(Duration::from_secs(7200))),
+        };
+
+        assert!(
+            desired.should_apply_patch(provider.status.as_ref(), Duration::from_secs(60)),
+            "changed model fields should be applied regardless of expiry freshness"
+        );
+    }
+
+    #[test]
+    fn changed_error_is_applied_even_when_persisted_deadline_is_far() {
+        let provider = discovery_provider(
+            "p",
+            &serde_json::json!({
+                "modelDiscoveryError": "unreachable",
+                "servedModels": ["a"],
+                "servedModelsExpiresAt": expiry_after(Duration::from_secs(3600))
+            }),
+        );
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: Some(owned(&["a"])),
+            expires_at: Some(expiry_after(Duration::from_secs(7200))),
+        };
+
+        assert!(
+            desired.should_apply_patch(provider.status.as_ref(), Duration::from_secs(60)),
+            "changed failure fields should be applied regardless of expiry freshness"
+        );
+    }
+
+    #[test]
+    fn expiry_clearing_is_applied_when_discovery_has_no_inventory() {
+        let provider = discovery_provider(
+            "p",
+            &serde_json::json!({
+                "servedModelsExpiresAt": expiry_after(Duration::from_secs(3600))
+            }),
+        );
+        let desired = DiscoveryStatusPatch {
+            name: "p".to_owned(),
+            failure_reason: None,
+            models: None,
+            expires_at: None,
+        };
+
+        assert!(
+            desired.should_apply_patch(provider.status.as_ref(), Duration::from_secs(60)),
+            "a stale expiry should be cleared when discovery has no inventory"
         );
     }
 
@@ -1287,6 +1431,18 @@ mod tests {
         store
             .fresh_inventory(&discovery_provider(provider, &serde_json::json!({})))
             .map(|(_, expires_at)| expires_at)
+    }
+
+    fn expiry_after(duration: Duration) -> String {
+        let Ok(duration) = time::Duration::try_from(duration) else {
+            std::process::abort();
+        };
+        let Some(expiration) = time::OffsetDateTime::now_utc().checked_add(duration) else {
+            std::process::abort();
+        };
+        expiration
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| std::process::abort())
     }
 
     fn status_with_models(store: &ServedModelStore, models: &[&str]) -> serde_json::Value {
