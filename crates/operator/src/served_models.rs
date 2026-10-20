@@ -991,7 +991,8 @@ mod tests {
                 "modelDiscoveryError": "timeout",
                 "servedModels": ["a"],
                 "servedModelsExpiresAt": "2030-01-01T00:00:00Z"
-            })
+            }),
+            "present fields are carried by the apply"
         );
 
         let cleared = DiscoveryStatusPatch {
