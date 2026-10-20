@@ -132,11 +132,11 @@ async fn create_records(client: &Client, plan: &Plan) -> Result<Outcome, Operato
         (found.metadata.name.unwrap_or_default(), false)
     } else {
         let api: Api<GridNetwork> = Api::all(client.clone());
-        let created = Box::pin(create(&api, &grid_network(plan)?)).await?;
+        let created = Box::pin(create_object(&api, &grid_network(plan)?)).await?;
         (plan.network.clone(), created)
     };
     let sites: Api<GridSite> = Api::all(client.clone());
-    let created_site = Box::pin(create(&sites, &grid_site(plan, &network))).await?;
+    let created_site = Box::pin(create_object(&sites, &grid_site(plan, &network))).await?;
     Ok(Outcome::Checked {
         network: created_network,
         site: created_site,
@@ -154,11 +154,11 @@ async fn mark(markers: &Api<ConfigMap>, plan: &Plan) -> Result<bool, OperatorErr
         data: Some(BTreeMap::from([("site".to_owned(), plan.site.clone())])),
         ..ConfigMap::default()
     };
-    create(markers, &marker).await
+    create_object(markers, &marker).await
 }
 
 /// Create `object`, `false` when one of its name already exists.
-async fn create<K>(api: &Api<K>, object: &K) -> Result<bool, OperatorError>
+async fn create_object<K>(api: &Api<K>, object: &K) -> Result<bool, OperatorError>
 where
     K: kube::Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize + Send + Sync,
 {
@@ -195,77 +195,55 @@ pub async fn swim_key_secret_for_identity(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::*;
-    use crate::crd::grid_network::{PeerTrustMode, SignalMode};
+    use kube::{Client, client::Body};
 
-    /// One scripted apiserver answer: method, path suffix, status code, body.
-    type Answer = (&'static str, &'static str, u16, serde_json::Value);
+    use crate::{
+        controller::grid_network::GridModes,
+        crd::grid_network::{PeerTrustMode, SignalMode},
+        error::OperatorError,
+        local_records::{
+            CREATED_BY_LABEL, MARKER, Outcome, Plan, ensure, grid_network, grid_site, swim_key_secret_for_identity,
+        },
+        local_site::PROVIDER_SITE_LABEL,
+        site_name::Identity,
+    };
 
-    fn plan(swim_key: Option<&str>) -> Plan {
-        Plan {
-            network: "grid".to_owned(),
-            site: "hub".to_owned(),
-            identity: Identity {
-                namespace: "grid".to_owned(),
-                secret: "grid-site-identity".to_owned(),
-            },
-            ca_secret: "grid-ca".to_owned(),
-            swim_key_secret: swim_key.map(str::to_owned),
-            modes: GridModes::without_network(Some(SignalMode::Poll), Some(PeerTrustMode::Pin)),
-        }
+    #[tokio::test]
+    async fn a_failed_swim_key_read_skips_local_record_creation() {
+        let (client, seen) = apiserver(vec![("GET", "/secrets/grid-swim-key", 500, status(500))]);
+        create(&client, "grid", plan(None), "grid-swim-key")
+            .await
+            .expect_err("a failed Secret read skips record creation");
+
+        let requests = seen.lock().expect("requests").clone();
+        assert_eq!(requests.len(), 1, "only the SWIM key read is attempted");
+        assert!(
+            requests
+                .first()
+                .is_some_and(|request| { request.starts_with("GET ") && request.ends_with("/secrets/grid-swim-key") }),
+            "the only request reads the configured SWIM key Secret"
+        );
+        assert!(!requested(&seen, "POST", "/configmaps"));
+        assert!(!requested(&seen, "POST", "/gridnetworks"));
+        assert!(!requested(&seen, "POST", "/gridsites"));
     }
 
-    /// An apiserver answering from `script`, 404 otherwise, recording each request.
-    fn apiserver(script: Vec<Answer>) -> (Client, Arc<Mutex<Vec<String>>>) {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&seen);
-        let service = tower::service_fn(move |req: http::Request<kube::client::Body>| {
-            let (method, path) = (req.method().to_string(), req.uri().path().to_owned());
-            log.lock().expect("log").push(format!("{method} {path}"));
-            let (code, body) = script
-                .iter()
-                .find(|(m, suffix, ..)| *m == method && path.ends_with(suffix))
-                .map_or_else(|| (404, status(404)), |(.., code, body)| (*code, body.clone()));
-            async move {
-                Ok::<_, std::convert::Infallible>(
-                    http::Response::builder()
-                        .status(code)
-                        .body(kube::client::Body::from(serde_json::to_vec(&body).expect("body")))
-                        .expect("response"),
-                )
-            }
-        });
-        (Client::new(service, "grid"), seen)
-    }
+    #[tokio::test]
+    async fn a_missing_swim_key_still_creates_local_records() {
+        let (client, seen) = apiserver(vec![
+            ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/gridnetworks", 200, networks(&serde_json::json!([]))),
+            ("POST", "/gridnetworks", 201, object("GridNetwork", "grid")),
+            ("POST", "/gridsites", 201, object("GridSite", "hub")),
+        ]);
+        create(&client, "grid", plan(None), "grid-swim-key")
+            .await
+            .expect("a missing Secret still allows record creation");
 
-    fn status(code: u16) -> serde_json::Value {
-        let reason = if code == 404 { "NotFound" } else { "" };
-        serde_json::json!({ "kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code, "reason": reason })
-    }
-
-    fn networks(items: &serde_json::Value) -> serde_json::Value {
-        serde_json::json!({
-            "apiVersion": "grid.praxis.fast/v1alpha1", "kind": "GridNetworkList", "metadata": {}, "items": items,
-        })
-    }
-
-    fn object(kind: &str, name: &str) -> serde_json::Value {
-        let api_version = if kind == "ConfigMap" {
-            "v1"
-        } else {
-            "grid.praxis.fast/v1alpha1"
-        };
-        serde_json::json!({
-            "apiVersion": api_version, "kind": kind, "metadata": { "name": name },
-            "spec": { "gridNetworkRef": "grid" },
-        })
-    }
-
-    fn requested(seen: &Arc<Mutex<Vec<String>>>, method: &str, suffix: &str) -> bool {
-        seen.lock()
-            .expect("log")
-            .iter()
-            .any(|r| r.starts_with(method) && r.ends_with(suffix))
+        assert!(requested(&seen, "POST", "/configmaps"));
+        assert!(requested(&seen, "POST", "/gridnetworks"));
+        assert!(requested(&seen, "POST", "/gridsites"));
     }
 
     #[test]
@@ -389,5 +367,90 @@ mod tests {
             .await
             .expect_err("the marker failed");
         assert_eq!(seen.lock().expect("log").len(), 1);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test Utilities
+    // ---------------------------------------------------------------------------
+
+    /// Look up the SWIM key before creating records, propagating lookup failures.
+    async fn create(
+        client: &Client,
+        namespace: &str,
+        mut plan: Plan,
+        swim_key_secret: &str,
+    ) -> Result<Outcome, OperatorError> {
+        plan.swim_key_secret = Box::pin(swim_key_secret_for_identity(client, &plan.identity, swim_key_secret)).await?;
+        Box::pin(ensure(client, namespace, &plan)).await
+    }
+
+    /// One scripted apiserver answer: method, path suffix, status code, body.
+    type Answer = (&'static str, &'static str, u16, serde_json::Value);
+
+    fn plan(swim_key: Option<&str>) -> Plan {
+        Plan {
+            network: "grid".to_owned(),
+            site: "hub".to_owned(),
+            identity: Identity {
+                namespace: "grid".to_owned(),
+                secret: "grid-site-identity".to_owned(),
+            },
+            ca_secret: "grid-ca".to_owned(),
+            swim_key_secret: swim_key.map(str::to_owned),
+            modes: GridModes::without_network(Some(SignalMode::Poll), Some(PeerTrustMode::Pin)),
+        }
+    }
+
+    /// An apiserver answering from `script`, 404 otherwise, recording each request.
+    fn apiserver(script: Vec<Answer>) -> (Client, Arc<Mutex<Vec<String>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let service = tower::service_fn(move |req: http::Request<Body>| {
+            let (method, path) = (req.method().to_string(), req.uri().path().to_owned());
+            log.lock().expect("log").push(format!("{method} {path}"));
+            let (code, body) = script
+                .iter()
+                .find(|(m, suffix, ..)| *m == method && path.ends_with(suffix))
+                .map_or_else(|| (404, status(404)), |(.., code, body)| (*code, body.clone()));
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder()
+                        .status(code)
+                        .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                        .expect("response"),
+                )
+            }
+        });
+        (Client::new(service, "grid"), seen)
+    }
+
+    fn status(code: u16) -> serde_json::Value {
+        let reason = if code == 404 { "NotFound" } else { "" };
+        serde_json::json!({ "kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code, "reason": reason })
+    }
+
+    fn networks(items: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "grid.praxis.fast/v1alpha1", "kind": "GridNetworkList", "metadata": {}, "items": items,
+        })
+    }
+
+    fn object(kind: &str, name: &str) -> serde_json::Value {
+        let api_version = if kind == "ConfigMap" {
+            "v1"
+        } else {
+            "grid.praxis.fast/v1alpha1"
+        };
+        serde_json::json!({
+            "apiVersion": api_version, "kind": kind, "metadata": { "name": name },
+            "spec": { "gridNetworkRef": "grid" },
+        })
+    }
+
+    fn requested(seen: &Arc<Mutex<Vec<String>>>, method: &str, suffix: &str) -> bool {
+        seen.lock()
+            .expect("log")
+            .iter()
+            .any(|r| r.starts_with(method) && r.ends_with(suffix))
     }
 }
