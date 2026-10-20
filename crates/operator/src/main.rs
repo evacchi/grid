@@ -173,7 +173,9 @@ async fn main() {
         SiteStartup::Identified => {},
     }
     if startup.creates_records() && config.grid.create_local_records {
-        Box::pin(create_local_records(&client, &config, identity)).await;
+        if let Err(error) = Box::pin(create_local_records(&client, &config, identity)).await {
+            tracing::warn!(%error, "local grid records not created; retrying on the next start");
+        }
     }
     let GridModes {
         signal: signal_mode,
@@ -1277,16 +1279,16 @@ async fn site_from_identity(client: &Client, config: &Cli) -> Result<SiteIdentit
 }
 
 /// Create this site's missing `GridNetwork` and `GridSite`, logging rather than failing startup.
-async fn create_local_records(client: &Client, config: &Cli, identity: operator::site_name::Identity) {
+async fn create_local_records(
+    client: &Client,
+    config: &Cli,
+    identity: operator::site_name::Identity,
+) -> Result<(), OperatorError> {
     let Some(site) = config.swim.site_name.as_deref() else {
-        return;
+        return Ok(());
     };
-    let swim_key = operator::local_records::swim_key_beside(client, &identity, &config.grid.swim_key_secret)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "SWIM key Secret not readable; the GridNetwork names none");
-            None
-        });
+    let swim_key_secret_id = &config.grid.swim_key_secret;
+    let swim_key = operator::local_records::swim_key_secret_for_identity(client, &identity, swim_key_secret_id).await?;
     let plan = operator::local_records::Plan {
         network: config.grid.network.clone(),
         site: site.to_owned(),
@@ -1295,12 +1297,9 @@ async fn create_local_records(client: &Client, config: &Cli, identity: operator:
         swim_key_secret: swim_key,
         modes: GridModes::without_network(config.grid.signal_transport, config.grid.peer_trust),
     };
-    match operator::local_records::ensure(client, client.default_namespace(), &plan).await {
-        Ok(outcome) => tracing::info!(?outcome, "local grid records checked"),
-        Err(error) => {
-            tracing::warn!(%error, "local grid records not created; retrying on the next start");
-        },
-    }
+    let outcome = operator::local_records::ensure(client, client.default_namespace(), &plan).await?;
+    tracing::info!(?outcome, "local grid records checked");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2993,6 +2992,8 @@ async fn peer_tls(client: &Client) -> Option<Arc<operator::signals::PeerTlsMater
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
+    use clap::Parser as _;
+
     use super::*;
 
     #[tokio::test]
@@ -3022,6 +3023,51 @@ mod tests {
                 "neither authorized peers nor absent identities can publish gateway status"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_swim_key_read_skips_local_record_creation() {
+        let (client, seen) =
+            local_records_apiserver(vec![("GET", "/secrets/grid-swim-key", 500, local_records_status(500))]);
+        let config = local_records_config();
+        let identity = operator::site_name::Identity {
+            namespace: "grid".to_owned(),
+            secret: "grid-site-identity".to_owned(),
+        };
+
+        create_local_records(&client, &config, identity)
+            .await
+            .expect_err("a failed Secret read skips record creation");
+
+        let requests = seen.lock().expect("requests").clone();
+        assert_eq!(requests.len(), 1, "only the SWIM key read is attempted");
+        assert!(
+            requests
+                .first()
+                .is_some_and(|request| { request.starts_with("GET ") && request.ends_with("/secrets/grid-swim-key") }),
+            "the only request reads the configured SWIM key Secret"
+        );
+        assert!(!local_records_requested(&seen, "POST", "/configmaps"));
+        assert!(!local_records_requested(&seen, "POST", "/gridnetworks"));
+        assert!(!local_records_requested(&seen, "POST", "/gridsites"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_swim_key_still_creates_local_records() {
+        let (client, seen) = local_records_apiserver(local_records_missing_key_script());
+        let config = local_records_config();
+        let identity = operator::site_name::Identity {
+            namespace: "grid".to_owned(),
+            secret: "grid-site-identity".to_owned(),
+        };
+
+        create_local_records(&client, &config, identity)
+            .await
+            .expect("a missing Secret still allows record creation");
+
+        assert!(local_records_requested(&seen, "POST", "/configmaps"));
+        assert!(local_records_requested(&seen, "POST", "/gridnetworks"));
+        assert!(local_records_requested(&seen, "POST", "/gridsites"));
     }
 
     #[tokio::test]
@@ -5044,5 +5090,116 @@ mod tests {
                 "{manager} cannot own the other condition"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test Utilities
+    // ---------------------------------------------------------------------------
+
+    /// One scripted Kubernetes API response: method, path suffix, code, and body.
+    type LocalRecordsAnswer = (&'static str, &'static str, u16, serde_json::Value);
+
+    /// CLI settings for a local site with a configured SWIM key Secret.
+    fn local_records_config() -> Cli {
+        Cli::try_parse_from([
+            "grid-operator",
+            "--swim-site-name",
+            "hub",
+            "--grid-swim-key-secret",
+            "grid-swim-key",
+            "--grid-network",
+            "grid",
+            "--enroll-ca-secret",
+            "grid-ca",
+        ])
+        .expect("CLI settings")
+    }
+
+    /// An API client that answers from `script` and records every request.
+    fn local_records_apiserver(script: Vec<LocalRecordsAnswer>) -> (Client, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let (method, path) = (request.method().to_string(), request.uri().path().to_owned());
+            log.lock().expect("requests").push(format!("{method} {path}"));
+            let (code, body) = script
+                .iter()
+                .find(|(candidate, suffix, ..)| *candidate == method && path.ends_with(suffix))
+                .map_or_else(
+                    || (404, local_records_status(404)),
+                    |(.., code, body)| (*code, body.clone()),
+                );
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder()
+                        .status(code)
+                        .body(kube::client::Body::from(
+                            serde_json::to_vec(&body).expect("response body"),
+                        ))
+                        .expect("response"),
+                )
+            }
+        });
+        (Client::new(service, "grid"), seen)
+    }
+
+    /// Kubernetes Status body for a failed API response.
+    fn local_records_status(code: u16) -> serde_json::Value {
+        let reason = if code == 404 { "NotFound" } else { "" };
+        serde_json::json!({ "kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code, "reason": reason })
+    }
+
+    /// A minimal API object returned by a successful create.
+    fn local_records_object(kind: &str, name: &str) -> serde_json::Value {
+        let api_version = if kind == "ConfigMap" {
+            "v1"
+        } else {
+            "grid.praxis.fast/v1alpha1"
+        };
+        serde_json::json!({
+            "apiVersion": api_version, "kind": kind, "metadata": { "name": name },
+            "spec": { "gridNetworkRef": "grid" },
+        })
+    }
+
+    /// A `GridNetwork` list body containing `items`.
+    fn local_records_networks(items: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "grid.praxis.fast/v1alpha1", "kind": "GridNetworkList", "metadata": {}, "items": items,
+        })
+    }
+
+    /// Responses for an absent SWIM key followed by successful local record creation.
+    fn local_records_missing_key_script() -> Vec<LocalRecordsAnswer> {
+        vec![
+            ("GET", "/secrets/grid-swim-key", 404, local_records_status(404)),
+            (
+                "POST",
+                "/configmaps",
+                201,
+                local_records_object("ConfigMap", operator::local_records::MARKER),
+            ),
+            (
+                "GET",
+                "/gridnetworks",
+                200,
+                local_records_networks(&serde_json::json!([])),
+            ),
+            (
+                "POST",
+                "/gridnetworks",
+                201,
+                local_records_object("GridNetwork", "grid"),
+            ),
+            ("POST", "/gridsites", 201, local_records_object("GridSite", "hub")),
+        ]
+    }
+
+    /// Whether the recorded requests include `method` and a path ending in `suffix`.
+    fn local_records_requested(seen: &Arc<std::sync::Mutex<Vec<String>>>, method: &str, suffix: &str) -> bool {
+        seen.lock()
+            .expect("requests")
+            .iter()
+            .any(|request| request.starts_with(method) && request.ends_with(suffix))
     }
 }

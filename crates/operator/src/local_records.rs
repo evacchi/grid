@@ -37,9 +37,9 @@ pub struct Plan {
     pub site: String,
     /// The identity Secret.
     pub identity: Identity,
-    /// The grid CA Secret beside it.
+    /// Name of the grid CA Secret in the identity's namespace.
     pub ca_secret: String,
-    /// The SWIM key Secret beside it, when it exists.
+    /// Name of the SWIM key Secret in the identity's namespace, when it exists.
     pub swim_key_secret: Option<String>,
     /// The modes the install starts in, declared so the network never contradicts them.
     pub modes: GridModes,
@@ -176,12 +176,12 @@ fn created_by() -> BTreeMap<String, String> {
     BTreeMap::from([(CREATED_BY_LABEL.to_owned(), CREATED_BY.to_owned())])
 }
 
-/// The SWIM key Secret's name when it exists beside the identity.
+/// The SWIM key Secret's name when it exists in the identity's namespace.
 ///
 /// # Errors
 ///
 /// Returns [`OperatorError::Kube`] when reading the Secret fails.
-pub async fn swim_key_beside(
+pub async fn swim_key_secret_for_identity(
     client: &Client,
     identity: &Identity,
     name: &str,
@@ -239,7 +239,8 @@ mod tests {
     }
 
     fn status(code: u16) -> serde_json::Value {
-        serde_json::json!({ "kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code })
+        let reason = if code == 404 { "NotFound" } else { "" };
+        serde_json::json!({ "kind": "Status", "apiVersion": "v1", "status": "Failure", "code": code, "reason": reason })
     }
 
     fn networks(items: &serde_json::Value) -> serde_json::Value {

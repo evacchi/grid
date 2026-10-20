@@ -58,7 +58,7 @@ pub struct GridArgs {
     #[arg(long = "grid-identity-namespace", env = "GRID_IDENTITY_NAMESPACE")]
     pub identity_namespace: Option<String>,
 
-    /// SWIM key Secret beside the identity, referenced when it exists.
+    /// SWIM key Secret in the identity namespace, referenced when it exists.
     #[arg(
         long = "grid-swim-key-secret",
         env = "GRID_SWIM_KEY_SECRET",
