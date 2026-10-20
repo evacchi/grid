@@ -664,7 +664,7 @@ pub struct InferenceProviderStatus {
     /// empty set means the backend serves no models. Bounded by the discovery
     /// caps (256 models, 256-byte names); order carries no meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("x-kubernetes-list-type" = "set"))]
+    #[schemars(extend("x-kubernetes-list-type" = "atomic"))]
     pub served_models: Option<Vec<String>>,
 
     /// RFC 3339 UTC deadline for the corresponding `servedModels` set.
