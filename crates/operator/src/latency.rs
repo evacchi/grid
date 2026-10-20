@@ -289,7 +289,6 @@ mod tests {
         }
     }
 
-
     fn obs(metric: &str, labels: &[(&str, &str)], value: f64) -> Observation {
         Observation {
             metric: metric.to_owned(),
@@ -425,7 +424,6 @@ mod tests {
         let idle = history.record_observations(&scrape(100.0, 0.3, 0.02, 1000.0, 0.0), start + Duration::from_secs(60));
         assert!(idle.is_empty(), "nothing completed in the last 30s: {idle:?}");
     }
-
 
     #[test]
     fn quantiles_interpolate_within_a_bucket() {

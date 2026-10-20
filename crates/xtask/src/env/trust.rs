@@ -568,7 +568,6 @@ mod tests {
             .map_or_else(Vec::new, Clone::clone)
     }
 
-
     /// Every YAML file under a topology's `configs` directory.
     fn provider_configs(dir: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();

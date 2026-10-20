@@ -560,7 +560,6 @@ mod tests {
             .collect()
     }
 
-
     /// Site the interop fixtures are minted for.
     const INTEROP_FIXTURE_SITE: &str = "alpha";
 

@@ -33,7 +33,6 @@ pub(crate) const STREAK: u32 = 2;
 /// answers late reads as zero while it still serves.
 pub(crate) const PROGRESS_WINDOW: Duration = Duration::from_secs(30);
 
-
 /// The series this site publishes per provider: 1 when ready, 0 when not.
 pub const READY_SIGNAL: &str = "grid_provider_ready";
 

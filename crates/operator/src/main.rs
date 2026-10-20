@@ -83,7 +83,6 @@ use operator::{
     swim_endpoint::{SwimEndpoint, resolve_endpoint, resolve_endpoint_list_partial},
     swim_runtime::{self, RevisionLease, SwimConfig},
 };
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -173,7 +172,8 @@ async fn main() {
         SiteStartup::Identified => {},
     }
     if startup.creates_records() && config.grid.create_local_records {
-        if let Err(error) = Box::pin(create_local_records(&client, &config, identity)).await {
+        let result = Box::pin(create_local_records(&client, &config, identity)).await;
+        if let Err(error) = result {
             tracing::error!(%error, "local grid records not created");
             std::process::exit(1);
         }
@@ -1273,7 +1273,7 @@ async fn site_from_identity(client: &Client, config: &Cli) -> Result<SiteIdentit
     })
 }
 
-/// Create this site's missing `GridNetwork` and `GridSite`, logging rather than failing startup.
+/// Create this site's missing `GridNetwork` and `GridSite`, propagating lookup and creation errors.
 async fn create_local_records(
     client: &Client,
     config: &Cli,
@@ -1282,18 +1282,16 @@ async fn create_local_records(
     let Some(site) = config.swim.site_name.as_deref() else {
         return Ok(());
     };
-    let swim_key_secret_id = &config.grid.swim_key_secret;
-    let swim_key_secret =
-        operator::local_records::swim_key_secret_for_identity(client, &identity, swim_key_secret_id).await?;
     let plan = operator::local_records::Plan {
         network: config.grid.network.clone(),
         site: site.to_owned(),
         identity,
         ca_secret: config.enrollment.ca_secret.clone(),
-        swim_key_secret,
+        swim_key_secret: None,
         modes: GridModes::without_network(config.grid.signal_transport, config.grid.peer_trust),
     };
-    let outcome = operator::local_records::ensure(client, client.default_namespace(), &plan).await?;
+    let outcome =
+        operator::local_records::create(client, client.default_namespace(), plan, &config.grid.swim_key_secret).await?;
     tracing::info!(?outcome, "local grid records checked");
     Ok(())
 }

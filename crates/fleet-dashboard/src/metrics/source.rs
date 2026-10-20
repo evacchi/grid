@@ -309,7 +309,6 @@ mod tests {
         build_http_client(None, TIMEOUT).unwrap()
     }
 
-
     fn self_signed_ca() -> String {
         rcgen::generate_simple_self_signed(["localhost".to_owned()])
             .unwrap()

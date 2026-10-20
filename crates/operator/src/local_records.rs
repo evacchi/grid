@@ -190,6 +190,26 @@ pub async fn swim_key_secret_for_identity(
     Ok(found.map(|_| name.to_owned()))
 }
 
+/// Preserve lookup failures so a failed Secret read cannot create plaintext records.
+///
+/// # Errors
+///
+/// Returns [`OperatorError`] when reading the SWIM key Secret or creating records fails.
+pub async fn create(
+    client: &Client,
+    namespace: &str,
+    mut plan: Plan,
+    swim_key_secret_name: &str,
+) -> Result<Outcome, OperatorError> {
+    plan.swim_key_secret = Box::pin(swim_key_secret_for_identity(
+        client,
+        &plan.identity,
+        swim_key_secret_name,
+    ))
+    .await?;
+    Box::pin(ensure(client, namespace, &plan)).await
+}
+
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -200,10 +220,7 @@ mod tests {
     use crate::{
         controller::grid_network::GridModes,
         crd::grid_network::{PeerTrustMode, SignalMode},
-        error::OperatorError,
-        local_records::{
-            CREATED_BY_LABEL, MARKER, Outcome, Plan, ensure, grid_network, grid_site, swim_key_secret_for_identity,
-        },
+        local_records::{CREATED_BY_LABEL, MARKER, Outcome, Plan, create, ensure, grid_network, grid_site},
         local_site::PROVIDER_SITE_LABEL,
         site_name::Identity,
     };
@@ -372,17 +389,6 @@ mod tests {
     // ---------------------------------------------------------------------------
     // Test Utilities
     // ---------------------------------------------------------------------------
-
-    /// Preserve lookup failures so a failed Secret read cannot create plaintext records.
-    async fn create(
-        client: &Client,
-        namespace: &str,
-        mut plan: Plan,
-        swim_key_secret: &str,
-    ) -> Result<Outcome, OperatorError> {
-        plan.swim_key_secret = Box::pin(swim_key_secret_for_identity(client, &plan.identity, swim_key_secret)).await?;
-        Box::pin(ensure(client, namespace, &plan)).await
-    }
 
     /// Group request matching and response data for declarative API-server scripts.
     type Answer = (&'static str, &'static str, u16, serde_json::Value);

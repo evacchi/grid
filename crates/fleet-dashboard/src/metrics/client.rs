@@ -423,7 +423,6 @@ mod tests {
         Client::new(base, TOKEN, build_http_client(None, Duration::from_secs(5)).unwrap())
     }
 
-
     fn at(unix: i64) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(unix).unwrap()
     }

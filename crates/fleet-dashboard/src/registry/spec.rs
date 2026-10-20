@@ -195,7 +195,6 @@ endpoints:
         );
     }
 
-
     #[test]
     fn a_yaml_syntax_error_yields_no_entries_and_one_error() {
         let (specs, errors) = parse_endpoints(b"endpoints: [oops");
