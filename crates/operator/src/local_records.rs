@@ -218,10 +218,10 @@ mod tests {
         let requests = seen.lock().expect("requests").clone();
         assert_eq!(requests.len(), 1, "only the SWIM key read is attempted");
         assert!(
-            requests
-                .first()
-                .is_some_and(|request| { request.starts_with("GET ") && request.ends_with("/secrets/grid-swim-key") }),
-            "the only request reads the configured SWIM key Secret"
+            requests.first().is_some_and(|request| {
+                request.starts_with("GET ") && request.ends_with("/namespaces/grid/secrets/grid-swim-key")
+            }),
+            "the only request reads the SWIM key Secret from the identity namespace"
         );
         assert!(!requested(&seen, "POST", "/configmaps"));
         assert!(!requested(&seen, "POST", "/gridnetworks"));
@@ -421,7 +421,7 @@ mod tests {
                 )
             }
         });
-        (Client::new(service, "grid"), seen)
+        (Client::new(service, "client-default"), seen)
     }
 
     fn status(code: u16) -> serde_json::Value {
