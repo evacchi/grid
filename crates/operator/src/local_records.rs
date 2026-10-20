@@ -373,7 +373,7 @@ mod tests {
     // Test Utilities
     // ---------------------------------------------------------------------------
 
-    /// Look up the SWIM key before creating records, propagating lookup failures.
+    /// Preserve lookup failures so a failed Secret read cannot create plaintext records.
     async fn create(
         client: &Client,
         namespace: &str,
@@ -384,7 +384,7 @@ mod tests {
         Box::pin(ensure(client, namespace, &plan)).await
     }
 
-    /// One scripted apiserver answer: method, path suffix, status code, body.
+    /// Group request matching and response data for declarative API-server scripts.
     type Answer = (&'static str, &'static str, u16, serde_json::Value);
 
     fn plan(swim_key: Option<&str>) -> Plan {
@@ -401,7 +401,7 @@ mod tests {
         }
     }
 
-    /// An apiserver answering from `script`, 404 otherwise, recording each request.
+    /// Record requests and reject unlisted routes so tests can assert expected calls.
     fn apiserver(script: Vec<Answer>) -> (Client, Arc<Mutex<Vec<String>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
