@@ -411,12 +411,15 @@ mod tests {
             let (code, body) = script
                 .iter()
                 .find(|(m, suffix, ..)| *m == method && path.ends_with(suffix))
-                .map_or_else(|| (404, status(404)), |(.., code, body)| (*code, body.clone()));
+                .map_or_else(
+                    || (404, serde_json::to_vec(&status(404)).expect("body")),
+                    |(.., code, body)| (*code, serde_json::to_vec(body).expect("body")),
+                );
             async move {
                 Ok::<_, std::convert::Infallible>(
                     http::Response::builder()
                         .status(code)
-                        .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                        .body(Body::from(body))
                         .expect("response"),
                 )
             }
