@@ -173,9 +173,9 @@ async fn main() {
         SiteStartup::Identified => {},
     }
     if startup.creates_records() && config.grid.create_local_records {
-        let records = Box::pin(create_local_records(&client, &config, identity)).await;
-        if let Err(error) = records {
-            tracing::warn!(%error, "local grid records not created; retrying on the next start");
+        if let Err(error) = Box::pin(create_local_records(&client, &config, identity)).await {
+            tracing::error!(%error, "local grid records not created");
+            std::process::exit(1);
         }
     }
     let install_modes = GridModes::without_network(config.grid.signal_transport, config.grid.peer_trust);
