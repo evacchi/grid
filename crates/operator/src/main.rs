@@ -108,7 +108,7 @@ async fn main() {
     let client = match Client::try_default().await {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "failed to create kube client");
+            tracing::error!(error = %e, "failed to create Kubernetes client");
             return;
         },
     };
