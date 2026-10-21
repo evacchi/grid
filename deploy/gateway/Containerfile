@@ -29,6 +29,7 @@ COPY . .
 # gateway is its own workspace (own Cargo.toml/lock), not a root member, so build
 # through its manifest, which resolves crates/gateway/Cargo.lock.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/crates/gateway/target \
     cargo build --release --manifest-path crates/gateway/Cargo.toml --bin grid-gateway \
     && cp crates/gateway/target/release/grid-gateway /usr/local/bin/grid-gateway
