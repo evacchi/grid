@@ -2,6 +2,14 @@
 resolver = "3"
 members = ["crates/ai-grid-filters"]
 
+# Keep Helm's build profile available in this separate workspace too.
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+debug = 0
+
 [workspace.package]
 version = "0.2.1"
 edition = "2024"

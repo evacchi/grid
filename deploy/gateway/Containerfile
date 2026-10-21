@@ -26,13 +26,16 @@ WORKDIR /src
 
 COPY . .
 
+# Helm CI selects ci; published releases retain the production profile.
+ARG CARGO_PROFILE=release
+
 # gateway is its own workspace (own Cargo.toml/lock), not a root member, so build
 # through its manifest, which resolves crates/gateway/Cargo.lock.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/crates/gateway/target \
-    cargo build --release --manifest-path crates/gateway/Cargo.toml --bin grid-gateway \
-    && cp crates/gateway/target/release/grid-gateway /usr/local/bin/grid-gateway
+    cargo build --profile "${CARGO_PROFILE}" --manifest-path crates/gateway/Cargo.toml --bin grid-gateway \
+    && cp "crates/gateway/target/${CARGO_PROFILE}/grid-gateway" /usr/local/bin/grid-gateway
 
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime

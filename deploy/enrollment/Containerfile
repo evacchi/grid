@@ -35,12 +35,15 @@ WORKDIR /src
 
 COPY . .
 
+# Helm CI selects ci; published releases retain the production profile.
+ARG CARGO_PROFILE=release
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p enrollment --bin enrollment \
+    cargo build --profile "${CARGO_PROFILE}" -p enrollment --bin enrollment \
         --features "${CARGO_FEATURES}" \
-    && cp target/release/enrollment /usr/local/bin/enrollment
+    && cp "target/${CARGO_PROFILE}/enrollment" /usr/local/bin/enrollment
 
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime
