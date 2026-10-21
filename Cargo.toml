@@ -116,6 +116,14 @@ strip = true
 panic = "abort"
 overflow-checks = true
 
+# Helm lifecycle tests need runnable images without production optimization costs.
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+debug = 0
+
 [profile.profiling]
 inherits = "release"
 debug = 2

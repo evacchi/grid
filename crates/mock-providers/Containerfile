@@ -30,11 +30,14 @@ WORKDIR /src
 
 COPY . .
 
+# Helm CI selects ci; published releases retain the production profile.
+ARG CARGO_PROFILE=release
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --package mock-providers \
-    && cp target/release/mock-providers /usr/local/bin/mock-providers
+    cargo build --profile "${CARGO_PROFILE}" --package mock-providers \
+    && cp "target/${CARGO_PROFILE}/mock-providers" /usr/local/bin/mock-providers
 
 # ------------------------------------------------------------------------------
 # Stage 2: Runtime

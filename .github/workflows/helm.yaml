@@ -170,6 +170,8 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CARGO_PROFILE: ci
     permissions:
       contents: read
     strategy:
@@ -195,12 +197,12 @@ jobs:
         env:
           PLATFORM: ${{ runner.os }}-${{ runner.arch }}
           IMAGE: ${{ matrix.name }}
-          TOOLCHAIN: ${{ hashFiles(matrix.file, 'rust-toolchain.toml', '.cargo/config.toml') }}
+          TOOLCHAIN: ${{ hashFiles(matrix.file, 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'crates/gateway/Cargo.toml') }}
           LOCKFILES: ${{ hashFiles('Cargo.lock', 'crates/gateway/Cargo.lock') }}
         run: |
           echo "sources=helm-cargo-sources-v1-${PLATFORM}-${LOCKFILES}" >> "${GITHUB_OUTPUT}"
-          echo "target=helm-cargo-target-v1-${PLATFORM}-${IMAGE}-${TOOLCHAIN}" >> "${GITHUB_OUTPUT}"
-          echo "locked-target=helm-cargo-target-v1-${PLATFORM}-${IMAGE}-${TOOLCHAIN}-${LOCKFILES}" >> "${GITHUB_OUTPUT}"
+          echo "target=helm-cargo-target-v1-${PLATFORM}-${IMAGE}-${CARGO_PROFILE}-${TOOLCHAIN}" >> "${GITHUB_OUTPUT}"
+          echo "locked-target=helm-cargo-target-v1-${PLATFORM}-${IMAGE}-${CARGO_PROFILE}-${TOOLCHAIN}-${LOCKFILES}" >> "${GITHUB_OUTPUT}"
 
       # Each image writes a distinct key; fallback shares downloads across images.
       # Register saves before cache-dance so its post step extracts mounts first.
@@ -276,6 +278,8 @@ jobs:
         with:
           context: .
           file: ${{ matrix.file }}
+          build-args: |
+            CARGO_PROFILE=${{ env.CARGO_PROFILE }}
           push: false
           tags: ghcr.io/praxis-proxy/grid-${{ matrix.name }}:ci
           outputs: type=docker,dest=/tmp/grid-${{ matrix.name }}.tar
