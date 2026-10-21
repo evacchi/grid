@@ -171,7 +171,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      CARGO_PROFILE: ci
+      CARGO_PROFILE: dev
     permissions:
       contents: read
     strategy:
