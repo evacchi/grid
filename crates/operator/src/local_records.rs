@@ -105,8 +105,9 @@ pub fn grid_site(plan: &Plan, network: &str) -> GridSite {
 
 /// Create whichever of this site's records is missing, once.
 ///
-/// The marker goes first, so a crash leaves records missing rather than undoing an admin's
-/// delete. A failed Secret lookup or create removes it again, so the next start retries.
+/// The SWIM key lookup precedes marker reservation. The marker precedes record creation,
+/// so a crash leaves records missing rather than undoing an admin's delete. A failed
+/// record create removes the marker again, so the next start retries.
 ///
 /// # Errors
 ///
@@ -114,14 +115,19 @@ pub fn grid_site(plan: &Plan, network: &str) -> GridSite {
 pub async fn create(
     client: &Client,
     namespace: &str,
-    plan: Plan,
+    mut plan: Plan,
     swim_key_secret_name: &str,
 ) -> Result<Outcome, OperatorError> {
     let markers: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    if Box::pin(markers.get_opt(MARKER)).await?.is_some() {
+        return Ok(Outcome::AlreadyCreated);
+    }
+    let swim_key_secret_future = swim_key_secret_for_identity(client, &plan.identity, swim_key_secret_name);
+    plan.swim_key_secret = Box::pin(swim_key_secret_future).await?;
     if !Box::pin(mark(&markers, &plan)).await? {
         return Ok(Outcome::AlreadyCreated);
     }
-    let created = Box::pin(create_records_with_swim_key(client, plan, swim_key_secret_name)).await;
+    let created = Box::pin(create_records(client, &plan)).await;
     if created.is_err() {
         let result = Box::pin(markers.delete(MARKER, &DeleteParams::default())).await;
         if let Err(error) = result {
@@ -129,22 +135,6 @@ pub async fn create(
         }
     }
     created
-}
-
-/// Preserve SWIM key lookup failures before creating records.
-async fn create_records_with_swim_key(
-    client: &Client,
-    mut plan: Plan,
-    swim_key_secret_name: &str,
-) -> Result<Outcome, OperatorError> {
-    let swim_key_secret = Box::pin(swim_key_secret_for_identity(
-        client,
-        &plan.identity,
-        swim_key_secret_name,
-    ))
-    .await?;
-    plan.swim_key_secret = swim_key_secret;
-    Box::pin(create_records(client, &plan)).await
 }
 
 /// Create the missing `GridNetwork` and `GridSite`, reusing an existing network.
@@ -228,26 +218,26 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn a_failed_swim_key_read_skips_local_record_creation() {
+    async fn a_failed_swim_key_read_reserves_no_marker_even_when_cleanup_is_unavailable() {
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 500, status(500)),
-            ("DELETE", "/configmaps/grid-operator-local-records", 200, status(200)),
+            ("DELETE", "/configmaps/grid-operator-local-records", 500, status(500)),
         ]);
         create(&client, "grid", plan(None), "grid-swim-key")
             .await
             .expect_err("a failed Secret read skips record creation");
 
         let requests = seen.lock().expect("requests").clone();
-        assert_eq!(requests.len(), 3, "the marker is removed after the failed lookup");
+        assert_eq!(requests.len(), 2, "only the marker and Secret are read");
         assert!(
             requests.get(1).is_some_and(|request| {
                 request.starts_with("GET ") && request.ends_with("/namespaces/grid/secrets/grid-swim-key")
             }),
-            "the SWIM key Secret is read after reserving the marker"
+            "the SWIM key Secret is read before reserving the marker"
         );
-        assert!(requested(&seen, "POST", "/configmaps"));
-        assert!(requested(&seen, "DELETE", "/configmaps/grid-operator-local-records"));
+        assert!(!requested(&seen, "POST", "/configmaps"));
+        assert!(!requested(&seen, "DELETE", "/configmaps/grid-operator-local-records"));
         assert!(!requested(&seen, "POST", "/gridnetworks"));
         assert!(!requested(&seen, "POST", "/gridsites"));
     }
@@ -255,8 +245,9 @@ mod tests {
     #[tokio::test]
     async fn a_missing_swim_key_still_creates_local_records() {
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
             ("GET", "/gridnetworks", 200, networks(&serde_json::json!([]))),
             ("POST", "/gridnetworks", 201, object("GridNetwork", "grid")),
             ("POST", "/gridsites", 201, object("GridSite", "hub")),
@@ -313,19 +304,61 @@ mod tests {
 
     #[tokio::test]
     async fn a_present_marker_writes_nothing_else() {
-        let (client, seen) = apiserver(vec![("POST", "/configmaps", 409, status(409))]);
+        let (client, seen) = apiserver(vec![(
+            "GET",
+            "/configmaps/grid-operator-local-records",
+            200,
+            object("ConfigMap", MARKER),
+        )]);
         let outcome = Box::pin(create(&client, "grid", plan(None), "grid-swim-key"))
             .await
             .expect("create");
         assert_eq!(outcome, Outcome::AlreadyCreated);
-        assert_eq!(seen.lock().expect("log").len(), 1, "only the marker write");
+        assert_eq!(seen.lock().expect("log").len(), 1, "only the existing marker is read");
+    }
+
+    #[tokio::test]
+    async fn a_failed_marker_read_creates_nothing() {
+        let (client, seen) = apiserver(vec![(
+            "GET",
+            "/configmaps/grid-operator-local-records",
+            500,
+            status(500),
+        )]);
+        create(&client, "grid", plan(None), "grid-swim-key")
+            .await
+            .expect_err("the marker read failed");
+        assert_eq!(seen.lock().expect("log").len(), 1, "only the marker read is attempted");
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_marker_reservation_skips_record_creation_and_cleanup() {
+        let (client, seen) = apiserver(vec![
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
+            ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 409, status(409)),
+        ]);
+        let outcome = create(&client, "grid", plan(None), "grid-swim-key")
+            .await
+            .expect("another instance reserved the marker");
+
+        assert_eq!(outcome, Outcome::AlreadyCreated);
+        assert_eq!(
+            seen.lock().expect("log").len(),
+            3,
+            "stop after the reservation conflict"
+        );
+        assert!(!requested(&seen, "DELETE", "/configmaps/grid-operator-local-records"));
+        assert!(!requested(&seen, "POST", "/gridnetworks"));
+        assert!(!requested(&seen, "POST", "/gridsites"));
     }
 
     #[tokio::test]
     async fn a_fresh_site_gets_both_records_after_the_marker() {
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
             ("GET", "/gridnetworks", 200, networks(&serde_json::json!([]))),
             ("POST", "/gridnetworks", 201, object("GridNetwork", "grid")),
             ("POST", "/gridsites", 201, object("GridSite", "hub")),
@@ -340,16 +373,27 @@ mod tests {
                 site: true
             }
         );
-        let first = seen.lock().expect("log").first().cloned().unwrap_or_default();
-        assert!(first.ends_with("/configmaps"), "the marker goes first, got {first}");
+        assert_eq!(
+            *seen.lock().expect("log"),
+            vec![
+                "GET /api/v1/namespaces/grid/configmaps/grid-operator-local-records",
+                "GET /api/v1/namespaces/grid/secrets/grid-swim-key",
+                "POST /api/v1/namespaces/grid/configmaps",
+                "GET /apis/grid.praxis.fast/v1alpha1/gridnetworks",
+                "POST /apis/grid.praxis.fast/v1alpha1/gridnetworks",
+                "POST /apis/grid.praxis.fast/v1alpha1/gridsites",
+            ],
+            "the Secret lookup precedes reservation, which precedes record creation"
+        );
     }
 
     #[tokio::test]
     async fn an_existing_network_is_used_and_an_existing_site_left_alone() {
         let existing = serde_json::json!([{ "metadata": { "name": "dagobah-local" }, "spec": {} }]);
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
             ("GET", "/gridnetworks", 200, networks(&existing)),
             ("POST", "/gridsites", 409, status(409)),
         ]);
@@ -369,8 +413,9 @@ mod tests {
     #[tokio::test]
     async fn a_refused_network_create_is_an_error_and_no_site_follows() {
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
             ("GET", "/gridnetworks", 200, networks(&serde_json::json!([]))),
             ("POST", "/gridnetworks", 403, status(403)),
         ]);
@@ -383,8 +428,9 @@ mod tests {
     #[tokio::test]
     async fn a_failed_create_removes_the_marker_so_the_next_start_retries() {
         let (client, seen) = apiserver(vec![
-            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
             ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 201, object("ConfigMap", MARKER)),
             ("GET", "/gridnetworks", 500, status(500)),
             ("DELETE", "/configmaps/grid-operator-local-records", 200, status(200)),
         ]);
@@ -396,11 +442,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_marker_write_creates_nothing() {
-        let (client, seen) = apiserver(vec![("POST", "/configmaps", 500, status(500))]);
+        let (client, seen) = apiserver(vec![
+            ("GET", "/configmaps/grid-operator-local-records", 404, status(404)),
+            ("GET", "/secrets/grid-swim-key", 404, status(404)),
+            ("POST", "/configmaps", 500, status(500)),
+        ]);
         create(&client, "grid", plan(None), "grid-swim-key")
             .await
             .expect_err("the marker failed");
-        assert_eq!(seen.lock().expect("log").len(), 1);
+        assert_eq!(seen.lock().expect("log").len(), 3);
+        assert!(!requested(&seen, "DELETE", "/configmaps/grid-operator-local-records"));
+        assert!(!requested(&seen, "POST", "/gridnetworks"));
+        assert!(!requested(&seen, "POST", "/gridsites"));
     }
 
     // ---------------------------------------------------------------------------
