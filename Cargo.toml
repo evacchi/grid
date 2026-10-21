@@ -114,9 +114,8 @@ strip = true
 panic = "abort"
 overflow-checks = true
 
-# Helm lifecycle tests need runnable images without production optimization costs.
-[profile.ci]
-inherits = "release"
+# Keep local builds and Helm CI images fast without debug-symbol overhead.
+[profile.dev]
 opt-level = 1
 lto = "off"
 codegen-units = 16

@@ -2,9 +2,8 @@
 resolver = "3"
 members = ["crates/ai-grid-filters"]
 
-# Keep Helm's build profile available in this separate workspace too.
-[profile.ci]
-inherits = "release"
+# Keep local and Helm CI build settings aligned with the root workspace.
+[profile.dev]
 opt-level = 1
 lto = "off"
 codegen-units = 16
