@@ -910,9 +910,9 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one fixture verifies discovered inventory is excluded from routing and gossip"
+        reason = "one fixture verifies discovered inventory expiry in routing and its exclusion from gossip"
     )]
-    fn fresh_discovered_inventory_is_not_routed_or_gossiped() {
+    fn fresh_discovered_inventory_is_routed_but_not_gossiped() {
         let provider = discovery_provider("p", &serde_json::json!({}));
         let store = ServedModelStore::new();
         refresh(&store, round(&[("p", Some(&["discovered"]))]), TTL);
@@ -936,6 +936,8 @@ mod tests {
             std::slice::from_ref(&provider),
             &[],
             &[],
+            &[],
+            "test-id",
             "site-a",
             None,
             None,
@@ -948,9 +950,13 @@ mod tests {
         let state = crate::controller::grid_network::provider_state_from_kube(&provider, "net", "site-a", None, &store)
             .unwrap_or_else(|| std::process::abort());
 
-        assert!(
-            overlay.candidates.is_empty(),
-            "fresh discovered models must not produce routing candidates"
+        assert_eq!(overlay.candidates.len(), 1, "fresh discovered model must route");
+        let candidate = overlay.candidates.first().unwrap_or_else(|| std::process::abort());
+        assert_eq!(candidate.name, "discovered", "candidate uses discovered model name");
+        assert_eq!(
+            candidate.expires_at.as_deref(),
+            inventory.expires_at(),
+            "candidate carries inventory expiry"
         );
         assert!(state.models.is_empty(), "fresh discovered models must not be gossiped");
     }
