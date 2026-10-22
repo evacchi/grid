@@ -311,63 +311,112 @@ fn remote_tool_names(provider: &crdt::ProviderState) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Convert a remote provider using its complete, fresh SWIM inventory when it has one.
-#[expect(
-    clippy::too_many_lines,
-    reason = "model expiry and static tool candidates share provider routing metadata"
-)]
+/// Convert a remote provider's configured models to candidates.
+fn static_remote_model_candidates(provider: &crdt::ProviderState, capacity_weight: u32) -> Vec<RoutingCandidate> {
+    let Some(fresh) = crdt_phase_to_fresh(&provider.phase) else {
+        return Vec::new();
+    };
+    provider
+        .models
+        .iter()
+        .map(|model| {
+            let mut candidate = bare_candidate(
+                CANDIDATE_KIND,
+                model,
+                &provider.site_id,
+                &provider.routing_cluster,
+                fresh,
+            );
+            candidate.capacity_weight = capacity_weight;
+            candidate
+        })
+        .collect()
+}
+
+/// Convert an unexpired remote model inventory to candidates.
+fn inventory_remote_model_candidates(
+    provider: &crdt::ProviderState,
+    inventory: &swim::ModelInventory,
+    capacity_weight: u32,
+) -> Vec<RoutingCandidate> {
+    let Some(fresh) = crdt_phase_to_fresh(&provider.phase) else {
+        return Vec::new();
+    };
+    let timestamp_nanos = i128::from(inventory.expires_at_ms).checked_mul(1_000_000);
+    if timestamp_nanos.is_none_or(|expires_at| expires_at <= time::OffsetDateTime::now_utc().unix_timestamp_nanos()) {
+        return Vec::new();
+    }
+    let Some(expires_at) = format_inventory_expiry(inventory.expires_at_ms) else {
+        return Vec::new();
+    };
+
+    inventory
+        .models
+        .iter()
+        .map(|model| {
+            let mut candidate = bare_candidate(
+                CANDIDATE_KIND,
+                model,
+                &provider.site_id,
+                &provider.routing_cluster,
+                fresh,
+            );
+            candidate.capacity_weight = capacity_weight;
+            candidate.expires_at = Some(expires_at.clone());
+            candidate
+        })
+        .collect()
+}
+
+/// Return whether an inventory belongs to the given CRDT provider identity.
+fn inventory_matches_provider(inventory: &swim::ModelInventory, provider: &crdt::ProviderState) -> bool {
+    inventory.network_id == provider.network_id
+        && inventory.origin_site == provider.site_id
+        && inventory.provider_id == provider.provider_id
+}
+
+/// Convert routable tools from a remote provider to candidates.
+fn remote_tool_candidates(provider: &crdt::ProviderState, capacity_weight: u32) -> Vec<RoutingCandidate> {
+    let Some(fresh) = crdt_phase_to_fresh(&provider.phase) else {
+        return Vec::new();
+    };
+    remote_tool_names(provider)
+        .into_iter()
+        .take(MAX_TOOLS_PER_PROVIDER)
+        .map(|tool| {
+            let mut candidate = bare_candidate(
+                CANDIDATE_KIND_MCP_TOOL,
+                tool,
+                &provider.site_id,
+                &provider.routing_cluster,
+                fresh,
+            );
+            candidate.capacity_weight = capacity_weight;
+            candidate
+        })
+        .collect()
+}
+
+/// Convert a remote CRDT provider's models and tools to routing candidates.
 pub(crate) fn remote_crdt_provider_to_candidates(
     provider: &crdt::ProviderState,
     inventories: &[swim::ModelInventory],
     grid_id: &str,
 ) -> Vec<RoutingCandidate> {
-    let Some(fresh) = crdt_phase_to_fresh(&provider.phase) else {
-        return Vec::new();
-    };
-    let inventory = inventories.iter().find(|inventory| {
-        inventory.grid_id == grid_id
-            && inventory.network_id == provider.network_id
-            && inventory.origin_site == provider.site_id
-            && inventory.provider_id == provider.provider_id
-    });
-    let (models, expires_at) = if let Some(inventory) = inventory {
-        let timestamp_nanos = i128::from(inventory.expires_at_ms).checked_mul(1_000_000);
-        if timestamp_nanos.is_none_or(|expires_at| expires_at <= time::OffsetDateTime::now_utc().unix_timestamp_nanos())
-        {
-            return Vec::new();
-        }
-        let Some(expires_at) = format_inventory_expiry(inventory.expires_at_ms) else {
-            return Vec::new();
-        };
-        (inventory.models.as_slice(), Some(expires_at))
-    } else {
-        (provider.models.as_slice(), None)
-    };
-    let cw = if crdt::is_valid_capacity_weight(provider.capacity_weight) {
+    let capacity_weight = if crdt::is_valid_capacity_weight(provider.capacity_weight) {
         provider.capacity_weight
     } else {
         1
     };
-    let make = |kind: &str, name: &str| {
-        let mut c = bare_candidate(kind, name, &provider.site_id, &provider.routing_cluster, fresh);
-        c.capacity_weight = cw;
-        c
-    };
-    let tools = remote_tool_names(provider);
-    models
+    let mut candidates = match inventories
         .iter()
-        .map(|model| {
-            let mut candidate = make(CANDIDATE_KIND, model);
-            candidate.expires_at.clone_from(&expires_at);
-            candidate
-        })
-        .chain(
-            tools
-                .into_iter()
-                .take(MAX_TOOLS_PER_PROVIDER)
-                .map(|tool| make(CANDIDATE_KIND_MCP_TOOL, tool)),
-        )
-        .collect()
+        .find(|inventory| inventory.grid_id == grid_id && inventory_matches_provider(inventory, provider))
+    {
+        Some(inventory) => inventory_remote_model_candidates(provider, inventory, capacity_weight),
+        None => static_remote_model_candidates(provider, capacity_weight),
+    };
+    candidates.extend(remote_tool_candidates(provider, capacity_weight));
+    candidates
 }
 
 /// Convert a signed inventory's Unix-millisecond expiry to the overlay RFC3339 form.

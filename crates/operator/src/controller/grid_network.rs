@@ -5176,7 +5176,7 @@ fn publish_real_provider_state(
     let site_name = swim.site_name();
     let mut snap = crdt::GridStateSnapshot::new(site_name.to_owned());
     let mut max_revision: u64 = 0;
-    let mut provider_uids = BTreeMap::new();
+    let mut provider_uids = Vec::new();
 
     for provider in providers {
         if provider.spec.grid_network_ref != network_name {
@@ -5184,14 +5184,12 @@ fn publish_real_provider_state(
         }
         let routing_id = routing_overlay::routing_identity(provider).unwrap_or("");
         let metrics = raw_metrics.get(routing_id).copied();
-        if let Some(state) = provider_state_from_kube(provider, network_name, site_name, metrics, served_model_store) {
+        let provider_state = provider_state_from_kube(provider, network_name, site_name, metrics, served_model_store);
+        if let Some(state) = provider_state {
             if provider.spec.model_discovery.is_some()
                 && let Some(uid) = provider.metadata.uid.as_deref()
             {
-                provider_uids.insert(
-                    format!("{}/{}/{}", state.network_id, state.site_id, state.provider_id),
-                    uid.to_owned(),
-                );
+                provider_uids.push(provider_uid_from_state(uid.to_owned(), &state));
             }
             upsert_provider_with_capabilities(&mut snap, &mut max_revision, state);
         }
@@ -5214,6 +5212,16 @@ fn publish_real_provider_state(
     if let Err(e) = swim.publish_state_broadcast(bc) {
         tracing::debug!(error = %e, "CRDT broadcast channel unavailable (runtime not yet receiving)");
     }
+}
+
+/// Associate a Kubernetes provider UID with the identity published in CRDT state.
+fn provider_uid_from_state(uid: String, state: &crdt::ProviderState) -> swim::ProviderUid {
+    let identity = swim::ProviderIdentity {
+        network: state.network_id.clone(),
+        site: state.site_id.clone(),
+        provider: state.provider_id.clone(),
+    };
+    swim::ProviderUid { identity, uid }
 }
 
 /// Count provider records learned from remote sites through distributed state.

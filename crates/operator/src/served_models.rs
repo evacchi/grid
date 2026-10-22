@@ -165,11 +165,7 @@ impl ModelInventory {
 
     /// Create a discovered inventory with its deadline and producing generation.
     #[cfg(test)]
-    pub(crate) fn discovered(
-        models: Arc<[String]>,
-        expires_at: String,
-        observed_generation: i64,
-    ) -> Self {
+    pub(crate) fn discovered(models: Arc<[String]>, expires_at: String, observed_generation: i64) -> Self {
         Self::Discovered(DiscoveredModelInventory {
             models,
             expires_at,

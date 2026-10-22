@@ -1265,10 +1265,14 @@ mod tests {
         }
         let mut state = StateBroadcast::new("site-a".to_owned(), 1, snapshot, None)
             .with_grid_id(Some("grid-a".to_owned()))
-            .with_provider_uids(BTreeMap::from([(
-                "net/site-a/provider-1".to_owned(),
-                "uid-a".to_owned(),
-            )]))
+            .with_provider_uids(vec![crate::ProviderUid {
+                identity: crate::ProviderIdentity {
+                    network: "net".to_owned(),
+                    site: "site-a".to_owned(),
+                    provider: "provider-1".to_owned(),
+                },
+                uid: "uid-a".to_owned(),
+            }])
             .with_signed_at(Some(now_ms()));
         state.signature = Some(crate::signing::sign_ecdsa_p256(&private_key, &state.signable_bytes()?)?);
         node_a.publish_state_broadcast(&state)?;
