@@ -4969,7 +4969,7 @@ fn upsert_provider_with_capabilities(
         }
     }
     // Tool names are NOT registered as Capability::Tool in the OR-set.
-    // They travel in the BroadcastExtension's `provider_tools` map and are
+    // They travel in the versioned provider-state extension and are
     // stored directly on the ProviderState. Duplicating them as capabilities
     // would bloat the SWIM byte budget for providers with large tool catalogs.
     snap.upsert_provider(state);
@@ -11896,8 +11896,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Tool names are stored on the provider record, NOT as `Capability::Tool`
-    /// in the OR-set. They travel in the `BroadcastExtension`'s `provider_tools`
-    /// map. This test verifies the provider is upserted with tools intact and
+    /// in the OR-set. They travel in the versioned provider-state extension.
+    /// This test verifies the provider is upserted with tools intact and
     /// that no `Capability::Tool` entries are created.
     #[test]
     fn upsert_tool_provider_stores_tools_on_provider_not_as_capabilities() {

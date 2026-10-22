@@ -48,7 +48,7 @@ const PROVIDER_STATE_EXTENSION_MAGIC: [u8; 8] = *b"AGNPSEXT";
 
 /// First framed provider-state extension version.
 const PROVIDER_STATE_EXTENSION_VERSION_V1: u8 = 1;
-/// Provider-state extension version that adds provider UID metadata.
+/// Provider-state extension version carrying structured tool and UID metadata.
 const PROVIDER_STATE_EXTENSION_VERSION_V2: u8 = 2;
 
 /// Domain-separation prefix mixed into every state-broadcast signature.
@@ -291,15 +291,22 @@ struct ProviderStateExtensionV1 {
     provider_tools: BTreeMap<String, Vec<String>>,
 }
 
-/// Provider-state extension carrying provider-instance UIDs.
+/// Metadata associated with one advertised provider.
+#[derive(Default, Deserialize, Serialize)]
+struct ProviderMetadata {
+    /// MCP tools served by the provider.
+    tools: Vec<String>,
+    /// Kubernetes UID binding dynamic model inventories to this instance.
+    uid: Option<String>,
+}
+
+/// Provider-state extension carrying metadata grouped by provider key.
 #[derive(Default, Deserialize, Serialize)]
 struct ProviderStateExtensionV2 {
     /// Whether an empty provider set is an authoritative withdrawal.
     authoritative_provider_state: bool,
-    /// MCP tool lists keyed by stable network/site/provider identity.
-    provider_tools: BTreeMap<String, Vec<String>>,
-    /// Kubernetes provider UIDs keyed by stable network/site/provider identity.
-    provider_uids: BTreeMap<String, String>,
+    /// Tool lists and instance UIDs keyed by `network/site/provider` identity.
+    providers: BTreeMap<String, ProviderMetadata>,
 }
 
 /// Extension format used by peers that predate provider capacity weights.
@@ -592,21 +599,27 @@ impl StateBroadcast {
             .filter(|provider| provider.capacity_weight != 1)
             .map(|provider| (provider_capacity_key(provider), provider.capacity_weight))
             .collect::<BTreeMap<_, _>>();
-        let provider_tools = self
-            .snapshot
-            .providers
-            .values()
-            .filter(|provider| !provider.tools.is_empty())
-            .map(|provider| (provider_capacity_key(provider), provider.tools.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let mut providers = BTreeMap::new();
+        for provider in self.snapshot.providers.values() {
+            let key = provider_capacity_key(provider);
+            let uid = self.provider_uids.get(&key).cloned();
+            if !provider.tools.is_empty() || uid.is_some() {
+                providers.insert(
+                    key,
+                    ProviderMetadata {
+                        tools: provider.tools.clone(),
+                        uid,
+                    },
+                );
+            }
+        }
+
         let provider_state_extension = ProviderStateExtensionV2 {
             authoritative_provider_state: self.authoritative_provider_state,
-            provider_tools,
-            provider_uids: self.provider_uids.clone(),
+            providers,
         };
-        let carries_provider_state_extension = provider_state_extension.authoritative_provider_state
-            || !provider_state_extension.provider_tools.is_empty()
-            || !provider_state_extension.provider_uids.is_empty();
+        let carries_provider_state_extension =
+            provider_state_extension.authoritative_provider_state || !provider_state_extension.providers.is_empty();
         let carries_extension = self.gateway_address.is_some()
             || self.site_cert_pem.is_some()
             || self.signature.is_some()
@@ -629,10 +642,15 @@ impl StateBroadcast {
                 bincode::serde::encode_into_std_write(&self.signals_address, &mut bytes, bincode::config::standard())?;
             }
             if carries_provider_state_extension {
-                let (version, payload) = if provider_state_extension.provider_uids.is_empty() {
+                let (version, payload) = if self.provider_uids.is_empty() {
                     let legacy = ProviderStateExtensionV1 {
                         authoritative_provider_state: provider_state_extension.authoritative_provider_state,
-                        provider_tools: provider_state_extension.provider_tools,
+                        provider_tools: provider_state_extension
+                            .providers
+                            .into_iter()
+                            .filter(|(_, metadata)| !metadata.tools.is_empty())
+                            .map(|(key, metadata)| (key, metadata.tools))
+                            .collect(),
                     };
                     (
                         PROVIDER_STATE_EXTENSION_VERSION_V1,
@@ -700,8 +718,8 @@ impl StateBroadcast {
                     "ignoring out-of-range remote provider capacity weight"
                 );
             }
-            if let Some(tools) = provider_state_extension.provider_tools.get(&key) {
-                provider.tools.clone_from(tools);
+            if let Some(metadata) = provider_state_extension.providers.get(&key) {
+                provider.tools.clone_from(&metadata.tools);
             }
         }
 
@@ -717,7 +735,11 @@ impl StateBroadcast {
             signed_at_ms: ext.signed_at_ms,
             grid_id: ext.grid_id,
             signals_address,
-            provider_uids: provider_state_extension.provider_uids,
+            provider_uids: provider_state_extension
+                .providers
+                .into_iter()
+                .filter_map(|(key, metadata)| metadata.uid.map(|uid| (key, uid)))
+                .collect(),
         })
     }
 
@@ -823,8 +845,11 @@ fn decode_provider_state_extension(remaining: &[u8]) -> ProviderStateExtensionV2
         if consumed == payload.len() {
             return ProviderStateExtensionV2 {
                 authoritative_provider_state: extension.authoritative_provider_state,
-                provider_tools: extension.provider_tools,
-                provider_uids: BTreeMap::new(),
+                providers: extension
+                    .provider_tools
+                    .into_iter()
+                    .map(|(key, tools)| (key, ProviderMetadata { tools, uid: None }))
+                    .collect(),
             };
         }
         return ProviderStateExtensionV2::default();
@@ -2132,7 +2157,7 @@ mod tests {
         for provider in snap.providers.values_mut() {
             provider.models.clear();
         }
-        let provider_uids = BTreeMap::from([("net/site-p/provider".to_owned(), uid.to_owned())]);
+        let provider_uids = BTreeMap::from([(format!("net/{site}/provider"), uid.to_owned())]);
         sign_state_broadcast(
             StateBroadcast::new(site.to_owned(), revision, snap, None)
                 .with_grid_id(Some(grid.to_owned()))
@@ -2228,6 +2253,77 @@ mod tests {
 
         assert_eq!(decoded.provider_uids, broadcast.provider_uids);
         assert_eq!(decoded.grid_id, broadcast.grid_id);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the protocol assertion reads one broadcast from its base snapshot through the V2 metadata frame"
+    )]
+    fn v2_metadata_groups_tools_and_uids_by_provider_key() -> Result<(), Box<dyn std::error::Error>> {
+        let broadcast = provider_metadata_broadcast();
+        let bytes = broadcast.encode()?;
+        let (_, base_used): (StateBroadcastV1, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
+        let after_base = bytes.get(base_used..).unwrap_or(&[]);
+        let (_, extension_used): (BroadcastExtension, usize) =
+            bincode::serde::decode_from_slice(after_base, bincode::config::standard())?;
+        let after_extension = after_base.get(extension_used..).unwrap_or(&[]);
+        let (_, signals_used): (Option<String>, usize) =
+            bincode::serde::decode_from_slice(after_extension, bincode::config::standard())?;
+        let framed = after_extension.get(signals_used..).unwrap_or(&[]);
+        let (header, header_used): (ProviderStateExtensionHeader, usize) =
+            bincode::serde::decode_from_slice(framed, bincode::config::standard())?;
+        let payload = framed.get(header_used..).unwrap_or(&[]);
+        let (metadata, consumed): (ProviderStateExtensionV2, usize) =
+            bincode::serde::decode_from_slice(payload, bincode::config::standard())?;
+
+        assert_eq!(header.version, PROVIDER_STATE_EXTENSION_VERSION_V2);
+        assert_eq!(
+            consumed,
+            payload.len(),
+            "V2 must contain only the structured metadata payload"
+        );
+        assert!(metadata.authoritative_provider_state);
+        assert_eq!(
+            metadata.providers.len(),
+            3,
+            "each provider must have one metadata entry"
+        );
+        for (key, provider_metadata) in metadata.providers {
+            let provider = broadcast
+                .snapshot
+                .providers
+                .get(&key)
+                .ok_or("metadata key must identify an advertised provider")?;
+            assert_eq!(
+                provider_metadata.tools, provider.tools,
+                "tools must stay with their provider key"
+            );
+            assert_eq!(provider_metadata.uid.as_ref(), broadcast.provider_uids.get(&key));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signed_v2_metadata_round_trips_without_changing_authenticated_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let (private_key, public_key) = generate_signing_key_and_pubkey();
+        let broadcast = sign_state_broadcast(provider_metadata_broadcast(), &private_key);
+        let decoded = StateBroadcast::decode(&broadcast.encode()?)?;
+        let signature = decoded.signature.as_deref().ok_or("signature must survive decoding")?;
+
+        assert_eq!(
+            decoded.snapshot, broadcast.snapshot,
+            "tools must be restored to the correct providers"
+        );
+        assert_eq!(decoded.provider_uids, broadcast.provider_uids);
+        assert_eq!(
+            decoded.signable_bytes()?,
+            broadcast.signable_bytes()?,
+            "decoding and rebuilding lookup maps must preserve the signed bytes"
+        );
+        crate::signing::verify_ecdsa_p256(&public_key, &decoded.signable_bytes()?, signature)?;
         Ok(())
     }
 
@@ -4835,6 +4931,30 @@ mod tests {
     // -----------------------------------------------------------------------
     // Test Utilities
     // -----------------------------------------------------------------------
+
+    /// Build mixed tool-only, UID-only, and combined provider metadata.
+    fn provider_metadata_broadcast() -> StateBroadcast {
+        let tool_provider = provider_state("tool/my-mcp", Vec::new(), vec!["search".to_owned()], 3);
+        let combined_provider = provider_state("provider", Vec::new(), vec!["execute".to_owned()], 3);
+        let mut uid_provider = provider_state("provider", vec!["model".to_owned()], Vec::new(), 3);
+        uid_provider.network_id = "other-net".to_owned();
+        let mut snapshot = GridStateSnapshot::new("site-a".to_owned());
+        let mut provider_uids = BTreeMap::new();
+        for (provider, uid) in [
+            (tool_provider, None),
+            (combined_provider, Some("combined-uid")),
+            (uid_provider, Some("inference-uid")),
+        ] {
+            if let Some(uid) = uid {
+                provider_uids.insert(provider_capacity_key(&provider), uid.to_owned());
+            }
+            snapshot.upsert_provider(provider);
+        }
+        StateBroadcast::new("site-a".to_owned(), 3, snapshot, None)
+            .with_grid_id(Some("grid-a".to_owned()))
+            .with_provider_uids(provider_uids)
+            .with_authoritative_provider_state()
+    }
 
     #[expect(
         clippy::too_many_lines,
