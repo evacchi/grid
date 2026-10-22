@@ -2393,7 +2393,7 @@ mod tests {
                 provider_metadata.tools, provider.tools,
                 "tools must stay with their provider key"
             );
-            let identity = parse_provider_identity(&key).ok_or("metadata key must parse to provider identity")?;
+            let identity = provider_identity(provider);
             let expected_uid = broadcast
                 .provider_uids
                 .iter()
