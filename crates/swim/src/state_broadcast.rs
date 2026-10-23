@@ -1513,8 +1513,10 @@ impl StateBroadcastHandler {
         let scoped = grid.and_then(|grid| store.pin(&PinKey::grid(grid, origin)));
         let strict = grid.is_some_and(|grid| store.is_strict(grid));
 
-        // A grid-scoped identity, or a strict grid, retires the legacy per-site pin.
-        let legacy_retired = strict || store.pinned_in_any_grid(origin) || (grid.is_none() && store.any_strict());
+        // A grid-scoped identity, or a strict grid, retires the legacy per-site pin. An
+        // unsigned grid label proves nothing, so any strict grid refuses unpinned state.
+        let legacy_retired =
+            strict || store.pinned_in_any_grid(origin) || (broadcast.carries_grid_state() && store.any_strict());
 
         match scoped {
             Some(keys) if keys.is_empty() => Err(untrusted()),
@@ -2590,6 +2592,47 @@ mod tests {
                 Err(StateBroadcastError::UntrustedStateOrigin { origin_site }) if origin_site == "site-peer"
             ),
             "ordinary state from an unpinned origin is refused"
+        );
+    }
+
+    #[test]
+    fn a_strict_grid_refuses_unsigned_state_under_any_grid_label() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        handler.trust_store_sender().send_modify(|store| {
+            store.enforce("grid-a");
+        });
+        let relabeled = StateBroadcast::new("site-rogue".to_owned(), 1, snapshot("site-rogue", 1, 0.1), None)
+            .with_grid_id(Some("bogus".to_owned()))
+            .encode()
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            matches!(
+                handler.receive_item(&relabeled, None),
+                Err(StateBroadcastError::UntrustedStateOrigin { origin_site }) if origin_site == "site-rogue"
+            ),
+            "an unsigned grid label must not route state around a strict grid"
+        );
+    }
+
+    #[test]
+    fn a_strict_grid_still_learns_unscoped_peer_addresses() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        handler.trust_store_sender().send_modify(|store| {
+            store.enforce("grid-a");
+        });
+        let address = StateBroadcast::new(
+            "site-peer".to_owned(),
+            1,
+            GridStateSnapshot::new("site-peer".to_owned()),
+            Some("192.0.2.1:8080".to_owned()),
+        )
+        .encode()
+        .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            handler.receive_item(&address, None).is_ok(),
+            "an address carries no grid state for the strict grid to refuse"
         );
     }
 

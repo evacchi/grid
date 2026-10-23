@@ -13,6 +13,11 @@ Signing is off unless `GridNetwork.spec.peerTrust.signedState` is `enforce`. Wit
 every site together: an enforcing site refuses state from peers still at `off`,
 and a grid without `spec.tls` Secrets has no signer, so its state stops.
 
+A broadcast's grid ID is not signed by an unpinned peer, so it cannot prove which
+grid the state belongs to. While any grid on a site enforces, that site refuses
+unsigned state from unpinned peers in every grid. Addresses and certificates
+still pass.
+
 Under `enforce`, a site that changes its certificate key is locked out: peers
 keep the old key pinned and reject its state. This covers a `spiffe` renewal
 and a `pin` reissue. Do not rotate site certificates while `enforce` is set.
