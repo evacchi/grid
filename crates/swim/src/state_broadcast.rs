@@ -6,7 +6,7 @@
 //! [`BroadcastHandler`]: foca::BroadcastHandler
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -189,29 +189,44 @@ pub const MAX_PINNED_KEYS_PER_ORIGIN: usize = 2;
 /// Whose signing keys a pin holds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PinKey {
-    /// A site's keys, by origin site name.
+    /// A site's keys for broadcasts without a grid ID, from before grid scoping.
     Site(String),
+    /// A site's keys within one `GridNetwork`; an empty set is a revoked identity.
+    Grid {
+        /// Grid ID.
+        grid: String,
+        /// Site name.
+        site: String,
+    },
 }
 
-/// Bounded sets of accepted raw ECDSA P-256 public keys.
+impl PinKey {
+    /// Key `site`'s pin within `grid`.
+    #[must_use]
+    pub fn grid(grid: &str, site: &str) -> Self {
+        Self::Grid {
+            grid: grid.to_owned(),
+            site: site.to_owned(),
+        }
+    }
+}
+
+/// Accepted raw ECDSA P-256 public keys, and the grids that require them.
 ///
 /// Each pin holds up to [`MAX_PINNED_KEYS_PER_ORIGIN`] raw uncompressed EC
-/// points. A broadcast's signature verifies if it is valid under **any** key
-/// in its origin's pinned set; this is what makes bounded key rotation
-/// possible without an instantaneous flag-day cutover: a site publishes a
-/// next key alongside its current one, callers add the next key to the pin
-/// set, and once every peer has observed the rotation the old key is
-/// dropped. Deliberately opaque to *how* a pinned identity was established;
-/// that is an operator-level concern (see [`crate::signing`]). An origin
-/// with no pin, or an empty one, is not yet enforced against a
-/// signature. Prefer [`crate::node::SwimNode::pin_origin`] over mutating
-/// this store directly through [`StateBroadcastHandler::trust_store_sender`]:
-/// `pin_origin` also purges any state accepted from an origin before it had
-/// a pin, which a raw `watch::Sender::send`/`send_modify` call does not.
+/// points. A scoped broadcast verifies only against its [`PinKey::Grid`] pin.
+/// Operators establish those pins by validating existing site certificates
+/// against the Grid CA and declared trust policy. Prefer
+/// [`crate::node::SwimNode::pin_origin_for_grid`] or
+/// [`crate::node::SwimNode::pin_origin`] over mutating this store directly
+/// through [`StateBroadcastHandler::trust_store_sender`], because the node
+/// APIs also purge state accepted before a pin was installed.
 #[derive(Clone, Debug, Default)]
 pub struct TrustStore {
     /// Signing keys by whose they are.
     pins: HashMap<PinKey, Vec<Vec<u8>>>,
+    /// Grids that refuse unsigned state.
+    strict: HashSet<String>,
 }
 
 impl TrustStore {
@@ -228,6 +243,35 @@ impl TrustStore {
     /// Drop the pin for `key`.
     pub(crate) fn remove_pin(&mut self, key: &PinKey) {
         self.pins.remove(key);
+    }
+
+    /// Whether `grid` refuses unsigned state.
+    pub(crate) fn is_strict(&self, grid: &str) -> bool {
+        self.strict.contains(grid)
+    }
+
+    /// Make `grid` refuse unsigned state.
+    pub(crate) fn enforce(&mut self, grid: &str) {
+        self.strict.insert(grid.to_owned());
+    }
+
+    /// Drop `grid`'s strictness and pins.
+    pub(crate) fn forget_grid(&mut self, grid: &str) {
+        self.strict.remove(grid);
+        self.pins
+            .retain(|key, _| !matches!(key, PinKey::Grid { grid: pinned, .. } if pinned == grid));
+    }
+
+    /// Whether `site` has a pin in any grid.
+    fn pinned_in_any_grid(&self, site: &str) -> bool {
+        self.pins
+            .keys()
+            .any(|key| matches!(key, PinKey::Grid { site: pinned, .. } if pinned == site))
+    }
+
+    /// Whether any grid refuses unsigned state.
+    fn any_strict(&self) -> bool {
+        !self.strict.is_empty()
     }
 }
 
@@ -895,6 +939,13 @@ pub enum StateBroadcastError {
         origin_site: String,
     },
 
+    /// The broadcast has no verified pin in a grid that requires signed state.
+    #[error("state broadcast from origin {origin_site} has no trusted identity in its GridNetwork")]
+    UntrustedStateOrigin {
+        /// Site that originated the broadcast.
+        origin_site: String,
+    },
+
     /// The broadcast's signature does not verify against the pinned identity.
     #[error("state broadcast from pinned origin {origin_site} failed signature verification")]
     SignatureInvalid {
@@ -1077,6 +1128,11 @@ impl OriginStateHandle {
             })
     }
 
+    /// Return the origins represented by retained provider or metadata state.
+    pub(crate) fn known_origins(&self) -> BTreeSet<String> {
+        self.lock().known_origins()
+    }
+
     /// Remove provider and transport state for a departed origin, and
     /// publish the result.
     ///
@@ -1166,6 +1222,14 @@ pub struct StateBroadcastHandler {
 
     /// Hard bound for provider-state revision and ownership scopes.
     max_scopes: usize,
+}
+
+/// What a broadcast must carry to be merged.
+enum Admission {
+    /// Merged without a signature.
+    Unsigned,
+    /// Merged only if signed by one of these origin keys.
+    Signed(Vec<Vec<u8>>),
 }
 
 impl StateBroadcastHandler {
@@ -1398,27 +1462,19 @@ impl StateBroadcastHandler {
     }
 
     /// Reject a broadcast that fails signature verification against a
-    /// pinned identity.
+    /// pinned identity or violates strict grid trust.
     ///
-    /// An origin with **no** entry (or an empty entry) in the trust store
-    /// passes through unchecked. This is deliberate: it lets a
-    /// signed-broadcast rollout proceed incrementally as origins are pinned
-    /// one at a time, rather than requiring a synchronized flag-day
-    /// cutover. Once nerdalert's key-source question (grid#75) is resolved
-    /// and the operator starts populating pins, this becomes the
-    /// enforcement point; until then it is a no-op for every unpinned
-    /// origin. An origin pinned to more than one key (rotation overlap)
-    /// verifies against **any** key in its set.
+    /// Legacy unscoped origins without a pin pass through. A strict grid
+    /// requires a scoped pin for ordinary messages and accepts one
+    /// certificate-only empty bootstrap so the operator can validate its
+    /// certificate against that grid's CA before installing the pin. An
+    /// origin pinned to more than one key verifies against **any** key in its
+    /// set.
     fn verify_signature_if_pinned(&self, broadcast: &StateBroadcast) -> Result<(), StateBroadcastError> {
-        let pinned_keys = self
-            .trust_store_rx
-            .borrow()
-            .pin(&PinKey::Site(broadcast.origin_site.clone()))
-            .cloned()
-            .unwrap_or_default();
-        if pinned_keys.is_empty() {
-            return Ok(());
-        }
+        let pinned_keys = match self.admission(broadcast)? {
+            Admission::Unsigned => return Ok(()),
+            Admission::Signed(keys) => keys,
+        };
         let (signature, signed_at_ms) = Self::required_signature_fields(broadcast)?;
         let signable = Self::signable_for_verification(broadcast)?;
         let verified = pinned_keys
@@ -1437,6 +1493,42 @@ impl StateBroadcastHandler {
             });
         }
         Ok(())
+    }
+
+    /// How `broadcast` is admitted: unsigned, or signed by one of its origin's keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateBroadcastError::UntrustedStateOrigin`] when its origin
+    /// has no usable identity where one is required.
+    fn admission(&self, broadcast: &StateBroadcast) -> Result<Admission, StateBroadcastError> {
+        let store = self.trust_store_rx.borrow();
+        let origin = &broadcast.origin_site;
+        let grid = broadcast.grid_id.as_deref();
+        let untrusted = || StateBroadcastError::UntrustedStateOrigin {
+            origin_site: origin.clone(),
+        };
+
+        // A scoped pin decides alone; an empty one is a revoked identity.
+        let scoped = grid.and_then(|grid| store.pin(&PinKey::grid(grid, origin)));
+        let strict = grid.is_some_and(|grid| store.is_strict(grid));
+
+        // A grid-scoped identity, or a strict grid, retires the legacy per-site pin.
+        let legacy_retired = strict || store.pinned_in_any_grid(origin) || (grid.is_none() && store.any_strict());
+
+        match scoped {
+            Some(keys) if keys.is_empty() => Err(untrusted()),
+            Some(keys) => Ok(Admission::Signed(keys.clone())),
+            // The operator validates this certificate against its Grid CA
+            // and site identity, then installs the verified pin.
+            None if strict && broadcast.is_cert_only() => Ok(Admission::Unsigned),
+            None if legacy_retired => Err(untrusted()),
+            // Legacy: no entry, or an empty one, is not yet enforced.
+            None => Ok(store
+                .pin(&PinKey::Site(origin.clone()))
+                .filter(|keys| !keys.is_empty())
+                .map_or(Admission::Unsigned, |keys| Admission::Signed(keys.clone()))),
+        }
     }
 
     /// Return the signature and timestamp required for a pinned origin.
@@ -2055,9 +2147,9 @@ mod tests {
         let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
         let (current_key, current_pubkey) = generate_signing_key_and_pubkey();
         let (next_key, next_pubkey) = generate_signing_key_and_pubkey();
-        handler
-            .trust_store_sender()
-            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![current_pubkey, next_pubkey]));
+        handler.trust_store_sender().send_modify(|store| {
+            store.set_pin(PinKey::Site("site-p".to_owned()), vec![current_pubkey, next_pubkey]);
+        });
 
         let unsigned_from_next = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -2455,6 +2547,114 @@ mod tests {
         assert!(
             matches!(&result, Err(StateBroadcastError::SignatureInvalid { origin_site }) if origin_site.as_str() == "site-p"),
             "a broadcast re-labeled with a different grid_id than it was signed for must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "covers bootstrap acceptance and strict rejection as one trust-policy case"
+    )]
+    fn strict_grid_allows_only_empty_certificate_bootstrap_without_a_pin() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        handler.trust_store_sender().send_modify(|store| {
+            store.enforce("grid-a");
+        });
+        let bootstrap = StateBroadcast::new(
+            "site-peer".to_owned(),
+            1,
+            GridStateSnapshot::new("site-peer".to_owned()),
+            None,
+        )
+        .with_cert(Some("public certificate".to_owned()))
+        .with_grid_id(Some("grid-a".to_owned()))
+        .encode()
+        .unwrap_or_else(|_| std::process::abort());
+        let empty_state = StateBroadcast::new(
+            "site-peer".to_owned(),
+            2,
+            GridStateSnapshot::new("site-peer".to_owned()),
+            None,
+        )
+        .with_grid_id(Some("grid-a".to_owned()))
+        .encode()
+        .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            handler.receive_item(&bootstrap, None).is_ok(),
+            "certificate bootstrap is accepted for CA validation"
+        );
+        assert!(
+            matches!(
+                handler.receive_item(&empty_state, None),
+                Err(StateBroadcastError::UntrustedStateOrigin { origin_site }) if origin_site == "site-peer"
+            ),
+            "ordinary state from an unpinned origin is refused"
+        );
+    }
+
+    #[test]
+    fn an_empty_legacy_pin_leaves_its_origin_unenforced() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        handler.trust_store_sender().send_modify(|store| {
+            store.set_pin(PinKey::Site("site-peer".to_owned()), Vec::new());
+        });
+        let unsigned = StateBroadcast::new("site-peer".to_owned(), 1, snapshot("site-peer", 1, 0.1), None)
+            .encode()
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            handler.receive_item(&unsigned, None).is_ok(),
+            "an empty legacy entry is not yet enforced"
+        );
+    }
+
+    #[test]
+    fn a_pinned_origin_cannot_bootstrap_unsigned() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        let (_private_key, public_key) = generate_signing_key_and_pubkey();
+        handler.trust_store_sender().send_modify(|store| {
+            store.enforce("grid-a");
+            store.set_pin(PinKey::grid("grid-a", "site-peer"), vec![public_key]);
+        });
+        let bootstrap = StateBroadcast::new(
+            "site-peer".to_owned(),
+            1,
+            GridStateSnapshot::new("site-peer".to_owned()),
+            None,
+        )
+        .with_cert(Some("forged certificate".to_owned()))
+        .with_grid_id(Some("grid-a".to_owned()))
+        .encode()
+        .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            matches!(
+                handler.receive_item(&bootstrap, None),
+                Err(StateBroadcastError::MissingSignature { origin_site }) if origin_site == "site-peer"
+            ),
+            "once pinned, a certificate replacement must be signed"
+        );
+    }
+
+    #[test]
+    fn grid_scoped_pin_does_not_authenticate_the_same_site_in_another_grid() {
+        let (mut handler, _control) = StateBroadcastHandler::with_capacity("site-local".to_owned(), 8);
+        let (_pkcs8, public_key) = generate_signing_key_and_pubkey();
+        handler.trust_store_sender().send_modify(|store| {
+            store.set_pin(PinKey::grid("grid-a", "site-peer"), vec![public_key]);
+        });
+        let other_grid = StateBroadcast::new("site-peer".to_owned(), 1, snapshot("site-peer", 1, 0.1), None)
+            .with_grid_id(Some("grid-b".to_owned()))
+            .encode()
+            .unwrap_or_else(|_| std::process::abort());
+
+        assert!(
+            matches!(
+                handler.receive_item(&other_grid, None),
+                Err(StateBroadcastError::UntrustedStateOrigin { origin_site }) if origin_site == "site-peer"
+            ),
+            "a peer pin in one GridNetwork never authorizes another GridNetwork"
         );
     }
 
