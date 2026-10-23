@@ -6,7 +6,7 @@
 //! [`BroadcastHandler`]: foca::BroadcastHandler
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -186,10 +186,16 @@ pub struct StateBroadcast {
 /// overlap window.
 pub const MAX_PINNED_KEYS_PER_ORIGIN: usize = 2;
 
-/// Bounded set of accepted raw ECDSA P-256 public keys, keyed by origin site
-/// name.
+/// Whose signing keys a pin holds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PinKey {
+    /// A site's keys, by origin site name.
+    Site(String),
+}
+
+/// Bounded sets of accepted raw ECDSA P-256 public keys.
 ///
-/// Each value holds up to [`MAX_PINNED_KEYS_PER_ORIGIN`] raw uncompressed EC
+/// Each pin holds up to [`MAX_PINNED_KEYS_PER_ORIGIN`] raw uncompressed EC
 /// points. A broadcast's signature verifies if it is valid under **any** key
 /// in its origin's pinned set; this is what makes bounded key rotation
 /// possible without an instantaneous flag-day cutover: a site publishes a
@@ -197,12 +203,33 @@ pub const MAX_PINNED_KEYS_PER_ORIGIN: usize = 2;
 /// set, and once every peer has observed the rotation the old key is
 /// dropped. Deliberately opaque to *how* a pinned identity was established;
 /// that is an operator-level concern (see [`crate::signing`]). An origin
-/// with no entry, or an empty entry, is not yet enforced against a
+/// with no pin, or an empty one, is not yet enforced against a
 /// signature. Prefer [`crate::node::SwimNode::pin_origin`] over mutating
-/// this map directly through [`StateBroadcastHandler::trust_store_sender`]:
+/// this store directly through [`StateBroadcastHandler::trust_store_sender`]:
 /// `pin_origin` also purges any state accepted from an origin before it had
 /// a pin, which a raw `watch::Sender::send`/`send_modify` call does not.
-pub type TrustStore = BTreeMap<String, Vec<Vec<u8>>>;
+#[derive(Clone, Debug, Default)]
+pub struct TrustStore {
+    /// Signing keys by whose they are.
+    pins: HashMap<PinKey, Vec<Vec<u8>>>,
+}
+
+impl TrustStore {
+    /// The keys pinned for `key`, `None` when unpinned.
+    pub(crate) fn pin(&self, key: &PinKey) -> Option<&Vec<Vec<u8>>> {
+        self.pins.get(key)
+    }
+
+    /// Pin `keys` for `key`, replacing any previous pin.
+    pub(crate) fn set_pin(&mut self, key: PinKey, keys: Vec<Vec<u8>>) {
+        self.pins.insert(key, keys);
+    }
+
+    /// Drop the pin for `key`.
+    pub(crate) fn remove_pin(&mut self, key: &PinKey) {
+        self.pins.remove(key);
+    }
+}
 
 /// A caller supplied more than [`MAX_PINNED_KEYS_PER_ORIGIN`] keys for one origin.
 #[derive(Debug, thiserror::Error)]
@@ -1165,7 +1192,7 @@ impl StateBroadcastHandler {
         let (gw_tx, _) = watch::channel(BTreeMap::new());
         let (cert_tx, _) = watch::channel(BTreeMap::new());
         let (signals_tx, _) = watch::channel(BTreeMap::new());
-        let (trust_tx, trust_rx) = watch::channel(TrustStore::new());
+        let (trust_tx, trust_rx) = watch::channel(TrustStore::default());
         let max_origins = max_origins.max(1);
         let max_scopes = max_origins.saturating_mul(RETAINED_SCOPE_MULTIPLIER).max(1);
         let retained = Arc::new(Mutex::new(RetainedOrigins::default()));
@@ -1386,7 +1413,7 @@ impl StateBroadcastHandler {
         let pinned_keys = self
             .trust_store_rx
             .borrow()
-            .get(&broadcast.origin_site)
+            .pin(&PinKey::Site(broadcast.origin_site.clone()))
             .cloned()
             .unwrap_or_default();
         if pinned_keys.is_empty() {
@@ -1475,7 +1502,7 @@ impl StateBroadcastHandler {
         let trust_store = self.trust_store_rx.borrow();
         let Some(origin) = origins
             .into_iter()
-            .find(|origin| trust_store.get(origin).is_none_or(Vec::is_empty))
+            .find(|origin| trust_store.pin(&PinKey::Site(origin.clone())).is_none_or(Vec::is_empty))
         else {
             tracing::warn!(
                 max_origins = self.max_origins,
@@ -1812,7 +1839,7 @@ mod tests {
         let (pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -1841,7 +1868,7 @@ mod tests {
         let (_pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None);
         let bytes = unsigned.encode().unwrap_or_else(|_| std::process::abort());
 
@@ -1864,7 +1891,7 @@ mod tests {
         let (wrong_key, _wrong_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![pinned_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![pinned_pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -1897,7 +1924,7 @@ mod tests {
         let (signing_key, pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -1928,7 +1955,7 @@ mod tests {
         let (signing_key, pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![pubkey]));
 
         let mut snap = snapshot("site-p", 1, 0.1);
         snap.increment_tenant_spend("tenant-x", 500);
@@ -1964,11 +1991,11 @@ mod tests {
         let (retired_key, retired_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![retired_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![retired_pubkey]));
         let (_current_key, current_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![current_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![current_pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -1999,7 +2026,7 @@ mod tests {
         let (_signing_key, pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -2030,7 +2057,7 @@ mod tests {
         let (next_key, next_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![current_pubkey, next_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![current_pubkey, next_pubkey]));
 
         let unsigned_from_next = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
             .with_signed_at(Some(now_ms()));
@@ -2071,7 +2098,7 @@ mod tests {
         let (pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None);
         let signature = crate::signing::sign_ecdsa_p256(
@@ -2098,7 +2125,7 @@ mod tests {
         let (pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
         let stale_at = now_ms().saturating_sub(MAX_BROADCAST_AGE_MS + 1_000);
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
@@ -2127,7 +2154,7 @@ mod tests {
         let (pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
         let future_at = now_ms() + MAX_CLOCK_SKEW_AHEAD_MS + 1_000;
 
         let unsigned = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
@@ -2231,7 +2258,7 @@ mod tests {
         let (signing_key, pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-pinned".to_owned(), vec![pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-pinned".to_owned()), vec![pubkey]));
 
         drop(receive_signed(&mut handler, "site-pinned", 1, &signing_key));
         for (origin, revision) in [("site-unpinned", 2), ("site-new", 3)] {
@@ -2261,7 +2288,7 @@ mod tests {
         for origin in ["site-pinned-a", "site-pinned-b"] {
             handler
                 .trust_store_sender()
-                .send_modify(|store| drop(store.insert(origin.to_owned(), vec![public_key.clone()])));
+                .send_modify(|store| store.set_pin(PinKey::Site(origin.to_owned()), vec![public_key.clone()]));
             drop(receive_signed(&mut handler, origin, 1, &signing_key));
         }
         let before = handler.subscribe().borrow().clone();
@@ -2278,7 +2305,7 @@ mod tests {
             );
             handler
                 .trust_store_sender()
-                .send_modify(|store| drop(store.insert(origin.clone(), vec![public_key.clone()])));
+                .send_modify(|store| store.set_pin(PinKey::Site(origin.clone()), vec![public_key.clone()]));
             assert!(
                 receive_signed(&mut handler, &origin, 1, &signing_key).is_none(),
                 "new pins cannot bypass capacity"
@@ -2404,7 +2431,7 @@ mod tests {
         let (pkcs8_der, raw_pubkey) = generate_signing_key_and_pubkey();
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-p".to_owned(), vec![raw_pubkey])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-p".to_owned()), vec![raw_pubkey]));
 
         let signed_at_ms = Some(now_ms());
         let for_grid_a = StateBroadcast::new("site-p".to_owned(), 1, snapshot("site-p", 1, 0.1), None)
@@ -4136,7 +4163,7 @@ mod tests {
         let mut handler = StateBroadcastHandler::new("site-local".to_owned());
         handler
             .trust_store_sender()
-            .send_modify(|store| drop(store.insert("site-a".to_owned(), vec![public_key])));
+            .send_modify(|store| store.set_pin(PinKey::Site("site-a".to_owned()), vec![public_key]));
 
         let accepted = receive(&mut handler, &unsigned.with_signature(Some(signature)));
         let tools = handler

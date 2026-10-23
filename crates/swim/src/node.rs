@@ -22,7 +22,7 @@ use crate::{
     AccumulatedOutput, GridRuntime, NodeId,
     runtime::TimerEvent,
     state_broadcast::{
-        DEFAULT_MAX_RETAINED_ORIGINS, MAX_PINNED_KEYS_PER_ORIGIN, OriginStateHandle, StateBroadcast,
+        DEFAULT_MAX_RETAINED_ORIGINS, MAX_PINNED_KEYS_PER_ORIGIN, OriginStateHandle, PinKey, StateBroadcast,
         StateBroadcastHandler, TooManyPinnedKeys, TrustStore,
     },
 };
@@ -253,12 +253,16 @@ impl SwimNode {
                 supplied: keys.len(),
             });
         }
-        let was_unpinned = self.trust_store_tx.borrow().get(&origin).is_none_or(Vec::is_empty);
+        let was_unpinned = self
+            .trust_store_tx
+            .borrow()
+            .pin(&PinKey::Site(origin.clone()))
+            .is_none_or(Vec::is_empty);
         if was_unpinned {
             self.evict_origin(&origin);
         }
         self.trust_store_tx.send_modify(|store| {
-            store.insert(origin, keys);
+            store.set_pin(PinKey::Site(origin), keys);
         });
         Ok(())
     }
@@ -270,7 +274,7 @@ impl SwimNode {
     /// already accepted under whatever enforcement applied when it arrived.
     pub fn unpin_origin(&self, origin: &str) {
         self.trust_store_tx.send_modify(|store| {
-            store.remove(origin);
+            store.remove_pin(&PinKey::Site(origin.to_owned()));
         });
     }
 
