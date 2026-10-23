@@ -1265,7 +1265,7 @@ async fn apply_signed_state(
     let client = &ctx.client;
 
     // Peers that cannot be re-verified keep their pins: a transient read failure must not drop all state.
-    let peer_pins = match collect_gossip_peer_pins(network, ctx, client, swim.site_name()).await {
+    let peer_pins = match collect_gossip_peer_pins(network, client, swim.site_name()).await {
         Ok(peer_pins) => Some(peer_pins),
         Err(error) => {
             tracing::warn!(%grid_id, %error, "keeping installed SWIM peer pins: peers could not be re-verified");
@@ -1277,6 +1277,34 @@ async fn apply_signed_state(
     swim.set_grid_trust_snapshot(grid_id.to_owned(), local_signing_key, peer_pins)
         .map_err(|error| OperatorError::InvalidResource(error.to_string()))?;
     Ok(signing_ready)
+}
+
+/// Apply this grid's signed-state mode, then publish the certificate bootstrap it allows.
+async fn sign_grid_state(
+    network: &GridNetwork,
+    ctx: &OperatorCtx,
+    swim: &SwimHandle,
+    name: &str,
+) -> Result<(), OperatorError> {
+    let signed_state = signed_state_mode(network);
+    // A generated ID changes each reconcile until status persists it; trust waits for it.
+    let Some(grid_id) = persisted_grid_id(network) else {
+        if signed_state == SignedStateMode::Off {
+            publish_site_cert(network, &ctx.client, swim, name).await;
+        }
+        return Ok(());
+    };
+    let signing_ready = Box::pin(apply_signed_state(network, ctx, swim, grid_id, signed_state)).await?;
+
+    match signed_state {
+        SignedStateMode::Off => publish_site_cert(network, &ctx.client, swim, name).await,
+        SignedStateMode::Enforce if signing_ready => {
+            Box::pin(publish_signed_site_cert(network, &ctx.client, swim, grid_id, name)).await;
+        },
+        // An unusable local identity cannot sign; stay silent rather than send unsigned.
+        SignedStateMode::Enforce => {},
+    }
+    Ok(())
 }
 
 /// Empty-state broadcast carrying this site's public certificate PEM.
@@ -1331,7 +1359,6 @@ async fn publish_signed_site_cert(
 )]
 async fn collect_gossip_peer_pins(
     network: &GridNetwork,
-    ctx: &OperatorCtx,
     client: &Client,
     local_site_name: &str,
 ) -> Result<PeerPins, OperatorError> {
@@ -1344,6 +1371,8 @@ async fn collect_gossip_peer_pins(
     let ca = std::str::from_utf8(&ca)
         .map_err(|_error| OperatorError::InvalidResource("Grid CA certificate is not UTF-8".to_owned()))?;
     let network_name = network.metadata.name.as_deref().unwrap_or_default();
+    // The declared mode, not the startup one: a trust change under gossip does not restart.
+    let trust = GridModes::of(network).trust;
     let mut verified = PeerPins::new();
     for site in list_all_grid_sites(client)
         .await?
@@ -1356,7 +1385,7 @@ async fn collect_gossip_peer_pins(
         if site_name == local_site_name {
             continue;
         }
-        match verified_peer_gossip_key(site, ca, ctx.peer_settings.trust) {
+        match verified_peer_gossip_key(site, ca, trust) {
             Ok(Some(key)) => {
                 verified.insert(site_name, vec![key]);
             },
@@ -1734,7 +1763,6 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
 
     let client = &ctx.client;
     ensure_tls_secrets(&network, client, ctx.site_name.as_deref()).await?;
-    let grid_id = resolve_grid_id(&network);
 
     if let Some(swim) = ctx.swim() {
         // When a GridNetwork configures a SWIM key Secret, resolve and apply it
@@ -1744,23 +1772,13 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
         // plaintext traffic.
         apply_configured_swim_key(&network, client, swim).await?;
 
-        let signed_state = signed_state_mode(&network);
-        let gossip_signing_ready = apply_signed_state(&network, &ctx, swim, &grid_id, signed_state).await?;
-
         // Announce CRD-declared seeds to the SWIM runtime so peers can be reached
         // without requiring the GRID_SWIM_SEEDS environment variable.
         // Re-announcing on each reconcile is idempotent (foca ignores existing members).
         // diff_seed_sets tracks additions/removals for diagnostic logging.
         announce_crd_seeds(&network, swim, &ctx.last_seeds).await;
 
-        match signed_state {
-            SignedStateMode::Off => publish_site_cert(&network, client, swim, name).await,
-            SignedStateMode::Enforce if gossip_signing_ready => {
-                publish_signed_site_cert(&network, client, swim, &grid_id, name).await;
-            },
-            // An unusable local identity cannot sign; stay silent rather than send unsigned.
-            SignedStateMode::Enforce => {},
-        }
+        Box::pin(sign_grid_state(&network, &ctx, swim, name)).await?;
     }
 
     // Rendering before membership converges would drop remote entries.
@@ -1923,6 +1941,7 @@ pub async fn reconcile(network: Arc<GridNetwork>, ctx: Arc<OperatorCtx>) -> Resu
     ))
     .await?;
 
+    let grid_id = resolve_grid_id(&network);
     let identity = site_identity_status(
         &network,
         client,
@@ -8512,6 +8531,75 @@ mod tests {
         assert!(
             verified_peer_gossip_key(&pinned, &other_ca.cert_pem, PeerTrustMode::Spiffe).is_err(),
             "SPIFFE trust still requires the Grid CA"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unpersisted_grid_id_installs_no_signed_state() {
+        let client = crate::resources::test_doubles::mock_kube_client_with_secrets(HashMap::new());
+        let ctx = OperatorCtx::new(client, None, SignalMode::default());
+        let (swim, mut runtime) = SwimHandle::detached("site-a");
+        let mut network = network_with_endpoint_transport("plaintext", None);
+        network.spec.grid_id = String::new();
+        network.spec.peer_trust = Some(crate::crd::grid_network::PeerTrustConfig {
+            mode: PeerTrustMode::Pin,
+            signed_state: SignedStateMode::Enforce,
+        });
+
+        let first = sign_grid_state(&network, &ctx, &swim, "glb-demo").await;
+        let second = sign_grid_state(&network, &ctx, &swim, "glb-demo").await;
+
+        assert!(first.is_ok() && second.is_ok());
+        assert_eq!(
+            runtime.grids_enforced(),
+            Vec::<String>::new(),
+            "a generated grid ID changes each reconcile until persisted"
+        );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::expect_used,
+        clippy::too_many_lines,
+        reason = "certificate and API server fixture"
+    )]
+    async fn peer_pins_follow_the_declared_trust_not_the_startup_one() {
+        let ca = certs::generate_ca("grid-ca").expect("ca");
+        let leaf = certs::generate_site_cert(&ca, "site-peer").expect("leaf");
+        let sites = serde_json::json!({
+            "apiVersion": "grid.praxis.fast/v1alpha1",
+            "kind": "GridSiteList",
+            "metadata": { "resourceVersion": "1" },
+            "items": [{
+                "apiVersion": "grid.praxis.fast/v1alpha1",
+                "kind": "GridSite",
+                "metadata": { "name": "site-peer" },
+                "spec": { "gridNetworkRef": "glb-demo" },
+                "status": { "publicCertPem": leaf.cert_pem }
+            }]
+        });
+        let ca_secret = serde_json::to_value(crate::resources::test_doubles::secret_with_key(
+            "ca.crt",
+            ca.cert_pem.as_bytes(),
+        ))
+        .expect("Secret");
+        let client = crate::resources::test_doubles::mock_kube_client_with_json(HashMap::from([
+            ("ca", ca_secret),
+            ("gridsites", sites),
+        ]));
+        let mut network = network_with_endpoint_transport("plaintext", None);
+        network.spec.peer_trust = Some(crate::crd::grid_network::PeerTrustConfig {
+            mode: PeerTrustMode::Pin,
+            signed_state: SignedStateMode::Enforce,
+        });
+
+        let pins = collect_gossip_peer_pins(&network, &client, "site-local")
+            .await
+            .expect("pins");
+
+        assert!(
+            pins.is_empty(),
+            "declared pin trust refuses a peer with no declared fingerprint: {pins:?}"
         );
     }
 

@@ -533,6 +533,17 @@ impl DetachedRuntime {
         Some(request.grid_id)
     }
 
+    /// Grid IDs the handle started or kept enforcing, in order.
+    pub(crate) fn grids_enforced(&mut self) -> Vec<String> {
+        let mut enforced = Vec::new();
+        while let Ok(update) = self.trust_updates.try_recv() {
+            if let GridTrustUpdate::Enforce(snapshot) = update {
+                enforced.push(snapshot.grid_id);
+            }
+        }
+        enforced
+    }
+
     /// Grid IDs the handle stopped enforcing, in order.
     pub(crate) fn grids_relaxed(&mut self) -> Vec<String> {
         let mut relaxed = Vec::new();
@@ -1617,7 +1628,6 @@ async fn run_loop(
         pending_drops.observe(&key);
 
         tokio::select! {
-            biased;
             Some(update) = channels.trust_update_rx.recv() => {
                 trust.apply(&node, &site_name, update);
                 publish_state(&state_tx, &node);
@@ -1733,6 +1743,11 @@ async fn run_loop(
                             continue;
                         }
                     }
+                }
+                // A trust update queued before this broadcast must sign it.
+                while let Ok(update) = channels.trust_update_rx.try_recv() {
+                    trust.apply(&node, &site_name, update);
+                    publish_state(&state_tx, &node);
                 }
                 bc = match trust.sign(bc) {
                     Ok(broadcast) => broadcast,
