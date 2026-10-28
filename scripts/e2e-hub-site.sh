@@ -70,11 +70,8 @@ MODEL=Qwen/Qwen3-0.6B
 ENROLL_HOST=enroll.grid.example.com
 ENROLL_PORT=8443
 FORGE_STATE="$ROOT/.forge/$PREFIX"
-# Rootless podman's kind provider reads its own network variable. Leave it unset for Docker,
-# or Forge may try to inspect a Podman network that Docker never created.
-if [[ ${KIND_EXPERIMENTAL_PROVIDER:-} == podman || -n ${KIND_EXPERIMENTAL_PODMAN_NETWORK:-} ]]; then
-  export KIND_EXPERIMENTAL_PODMAN_NETWORK=${KIND_EXPERIMENTAL_PODMAN_NETWORK:-$PREFIX-net}
-fi
+# Rootless podman's kind provider reads its own network variable.
+export KIND_EXPERIMENTAL_PODMAN_NETWORK=${KIND_EXPERIMENTAL_PODMAN_NETWORK:-$PREFIX-net}
 
 WORK=$(mktemp -d)
 PF_PID=""
@@ -155,12 +152,12 @@ cmd_up() {
   fi
   resolve_forge
   CREATED=1
+  # `up` creates the cross-cluster network as well as the configured Kind clusters.
+  # Stacks remain separate so the amd64 VCR image can be loaded before the site stack applies.
   # Word splitting is the point: the prefix is a command and its flags.
   # shellcheck disable=SC2086
   ${KIND_CREATE_PREFIX:-} "$FORGE_BIN" --config "$TOPO/forge.yaml" --state-dir "$FORGE_STATE" \
-    --non-interactive cluster create hub || die "create hub cluster"
-  ${KIND_CREATE_PREFIX:-} "$FORGE_BIN" --config "$TOPO/forge.yaml" --state-dir "$FORGE_STATE" \
-    --non-interactive cluster create site || die "create site cluster"
+    --non-interactive up || die "create the environment network and clusters"
   preload_model
   for c in hub site; do
     for img in operator gateway enrollment; do
