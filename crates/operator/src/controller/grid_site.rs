@@ -1029,39 +1029,21 @@ mod tests {
 
     #[test]
     fn connected_names_the_cause() {
-        assert_eq!(connected_for("TlsVerified"), ("True", CONNECTED.to_owned(), None));
-        assert_eq!(
-            connected_for("AdvertisedCertMismatch"),
-            ("True", CONNECTED.to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("ConnectTimeout"),
-            ("False", "Unreachable".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("PlaintextUnreachable"),
-            ("False", "Unreachable".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("HandshakeTimeout"),
-            ("False", "TLSProtocolError".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("GatewayAddressMissing"),
-            ("False", "AddressMissing".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("GatewayAddressUndeclared"),
-            ("False", "GatewayAddressUndeclared".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("GossipedAddressRefused"),
-            ("False", "AddressRefused".to_owned(), None)
-        );
-        assert_eq!(
-            connected_for("UntrustedIssuer"),
-            ("False", "UntrustedIssuer".to_owned(), None)
-        );
+        let cases = [
+            ("TlsVerified", ("True", CONNECTED, None)),
+            ("AdvertisedCertMismatch", ("True", CONNECTED, None)),
+            ("ConnectTimeout", ("False", "Unreachable", None)),
+            ("PlaintextUnreachable", ("False", "Unreachable", None)),
+            ("HandshakeTimeout", ("False", "TLSProtocolError", None)),
+            ("GatewayAddressMissing", ("False", "AddressMissing", None)),
+            ("GatewayAddressUndeclared", ("False", "GatewayAddressUndeclared", None)),
+            ("GossipedAddressRefused", ("False", "AddressRefused", None)),
+            ("UntrustedIssuer", ("False", "UntrustedIssuer", None)),
+        ];
+        for (reason, expected) in cases {
+            let (status, connected, moving) = connected_for(reason);
+            assert_eq!((status, connected.as_str(), moving), expected);
+        }
     }
 
     #[test]
