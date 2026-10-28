@@ -790,7 +790,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 |---|---|---|
 | `Pending` | Resource created (manually or by auto-discovery) | Initial default |
 | `Discovered` | SWIM peer observed as Alive | `GridNetwork` controller writes on first observation |
-| `Connecting` | Gateway address known (`spec.gatewayEndpoint.address` non-empty) | `GridSite` controller advances from Discovered, or from Pending for a declared site with both endpoints; performs identity-aware probe |
+| `Connecting` | Gateway address known (`spec.gatewayEndpoint.address` non-empty, or the own site's resolved operator address) | `GridSite` controller advances from Discovered, or from Pending for a declared site with both endpoints; performs identity-aware probe |
 | `Active` | `TlsVerified` | `GridSite` controller promotes from Connecting only after identity-verified TLS succeeds |
 | `Unreachable` | Connectivity failure while Active | `GridSite` controller moves Active → Unreachable when the endpoint cannot be reached |
 | `Left` | Set on graceful site departure | Preserved by operator once set |
@@ -804,6 +804,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 | `GatewayAddressKnown` | Connecting | Gateway address received; advancing to Connecting |
 | `EndpointsDeclared` | Connecting | Declared site names a dialable gateway endpoint, which also gives its signals endpoint; advancing without discovery |
 | `GatewayAddressMissing` | Discovered, Connecting, or Unreachable | No gateway address known (see `GRID_GATEWAY_ADDRESS`), or a previously probed site lost it |
+| `GatewayAddressUndeclared` | Pending, Discovered, Connecting, or Unreachable | This operator's own site has neither a declared endpoint nor a configured or discovered gateway address; set `gateway.address` |
 | `TlsVerified` | Active | TLS handshake succeeded; certificate chain, identity, and configured pin verified |
 | `IdentityVerificationRequired` | Connecting | TCP endpoint is reachable, but plaintext cannot establish the gateway identity |
 | `PlaintextUnreachable` | Connecting or Unreachable | TCP probe failed (explicit Plaintext mode) |
@@ -824,9 +825,12 @@ A discovered SWIM peer is not automatically authorized for routing.
   label on the `GridNetwork`).
 - Pending → Connecting: the `GridSite` controller advances a declared site (one without
   the `grid.praxis.fast/auto-discovered` label) that sets a dialable
-  `spec.gatewayEndpoint.address`, so it does not wait on SWIM.
+  `spec.gatewayEndpoint.address`, so it does not wait on SWIM. For this operator's own
+  site, the resolved `gateway.address` or LoadBalancer address supplies the endpoint when
+  the spec omits it; the operator does not write that address to the spec.
 - Discovered → Connecting: the `GridSite` controller advances automatically when
-  `spec.gatewayEndpoint.address` is non-empty. For auto-discovered sites, the egress address comes from
+  `spec.gatewayEndpoint.address` is non-empty. The own site can also use its resolved
+  operator address without changing the spec. For auto-discovered sites, the egress address comes from
   the remote operator's `GRID_GATEWAY_ADDRESS` env var, propagated via SWIM state broadcast.
   If the remote operator has not configured `GRID_GATEWAY_ADDRESS`, the egress address is empty
   and the site stays Discovered with reason `GatewayAddressMissing`.
@@ -853,7 +857,9 @@ still counts the transitions by phase and reason.
 the remote operator's `GRID_GATEWAY_ADDRESS` environment variable, propagated through the SWIM
 state broadcast.  If the remote operator has not configured `GRID_GATEWAY_ADDRESS`, the field
 is empty and the site stays Discovered.  For manually-applied `GridSite` resources, set
-`spec.gatewayEndpoint.address` explicitly to the data-plane gateway endpoint.
+`spec.gatewayEndpoint.address` explicitly to the data-plane gateway endpoint. The operator's
+own `GridSite` uses its configured or discovered local gateway address at reconcile time when
+the spec omits it, without patching the spec.
 
 **`status.publicCertPem`:** The public site certificate PEM received from the remote site via
 SWIM state broadcast.  Before storage, the operator performs a structural check:

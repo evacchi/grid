@@ -155,7 +155,10 @@ cmd_up() {
   # Word splitting is the point: the prefix is a command and its flags.
   # shellcheck disable=SC2086
   ${KIND_CREATE_PREFIX:-} "$FORGE_BIN" --config "$TOPO/forge.yaml" --state-dir "$FORGE_STATE" \
-    --non-interactive up
+    --non-interactive cluster create hub || die "create hub cluster"
+  ${KIND_CREATE_PREFIX:-} "$FORGE_BIN" --config "$TOPO/forge.yaml" --state-dir "$FORGE_STATE" \
+    --non-interactive cluster create site || die "create site cluster"
+  preload_model
   for c in hub site; do
     for img in operator gateway enrollment; do
       forge cluster load-image "$c" "$(image "$img")"
@@ -163,6 +166,18 @@ cmd_up() {
     forge apply "$c"
   done
   feedback_contract_test
+}
+
+# preload_model: the upstream VCR image is amd64-only. Pull and load that image on non-amd64
+# hosts before Forge applies the model workload; all other images keep their native platform.
+preload_model() {
+  local img
+  [[ $(uname -m) != x86_64 ]] || return 0
+  img=$(sed -n 's/^ *vcrImage: "\(.*\)"$/\1/p' "$TOPO/forge.yaml")
+  [[ -n $img ]] || die "no vcrImage in $TOPO/forge.yaml"
+  log "pulling amd64 model backend image $img"
+  "$CONTAINER_TOOL" pull --platform=linux/amd64 "$img" || die "pull amd64 model backend image"
+  forge cluster load-image site "$img" || die "load amd64 model backend image into site cluster"
 }
 
 # The CI-only test owns exactly one object and the CRD it installs on the empty hub.
@@ -280,6 +295,9 @@ renewal_args() {
   fi
   ! local_source || RA+=(--set grid.membership.source=Local)
   ! local_source || [[ $1 != grid-operator ]] || RA+=(--set signals.service.type=LoadBalancer)
+  ! local_source || [[ $1 != grid-operator ]] || RA+=(
+    --set gateway.serviceName=grid-gateway-internal
+    --set "gateway.address=grid-gateway-internal.$NS.svc:8080")
   polls || return 0
   case $1 in
     # grid.signals starts the operator in poll before its GridNetwork exists; without grid.id
@@ -380,6 +398,30 @@ network_condition() {
 # site_reports_enrolled <context>: the signer issued this site's identity, so a Secret some
 # other writer left cannot pass as enrolled.
 site_reports_enrolled() { [[ $(network_condition "$1" Enrolled) == True/Enrolled ]]; }
+
+own_site_connected() { [[ $(k "$1" get gridsite "$2" \
+  -o jsonpath='{.status.conditions[?(@.type=="Connected")].status}/{.status.conditions[?(@.type=="Connected")].reason}') == True/Connected ]]; }
+
+own_site_gateway_not_in_spec() { [[ -z $(k "$1" get gridsite "$2" -o jsonpath='{.spec.gatewayEndpoint.address}') ]]; }
+
+cluster_ip_gateway() {
+  kubectl --context "$1" -n "$NS" apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: grid-gateway-internal
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: praxis-gateway
+    app.kubernetes.io/instance: grid-gateway
+EOF
+}
 
 # snapshot_logs <context> <label>: every container, init and hook pods included.
 # Returns nonzero when any listing or log fetch fails.
@@ -523,6 +565,7 @@ install_hub() {
       --set "praxisConfig.render.backends.$SITE.endpoint=$SITE_GW_IP:8080" "${IMG[@]}" \
       "${hub_gateway_args[@]}" "${GA[@]}" || die "install hub grid-gateway"
   fi
+  ! local_source || cluster_ip_gateway "$HUB_CTX" || die "create hub ClusterIP gateway Service"
   eventually "hub operator enrolled from its own invite through the in-cluster Service" enrolled "$HUB_CTX" \
     || die "hub not enrolled"
   eventually "hub GridNetwork reports Enrolled by the signer" site_reports_enrolled "$HUB_CTX" \
@@ -614,6 +657,7 @@ install_site() {
     --set "grid.siteName=$SITE" --set gridIdentity.tlsSecretName=grid-site-identity --set gridIdentity.caSecretName=grid-ca "${trust[@]}" \
     --set "praxisConfig.render.backends.local.endpoint=$MODEL_IP:8000" \
     "${IMG[@]}" --set service.loadBalancerIP="$SITE_GW_IP" "${gw_shared[@]}" || die "install site grid-gateway"
+  ! local_source || cluster_ip_gateway "$SITE_CTX" || die "create site ClusterIP gateway Service"
   eventually "site operator enrolled from its copied invite through the hub enrollment URL" enrolled "$SITE_CTX" \
     || die "site not enrolled"
   eventually "$SITE GridNetwork reports Enrolled by the signer" site_reports_enrolled "$SITE_CTX" \
@@ -699,6 +743,13 @@ assert_membership() {
         pass "$ctx runs no SWIM Service under Local membership"
       fi
     done
+    for ctx in "$HUB_CTX" "$SITE_CTX"; do
+      name=hub
+      [[ $ctx == "$HUB_CTX" ]] || name=$SITE
+      eventually "$name own GridSite has no spec gatewayEndpoint" own_site_gateway_not_in_spec "$ctx" "$name" || true
+    done
+    eventually "$SITE own GridSite reaches Connected through its ClusterIP gateway override" \
+      own_site_connected "$SITE_CTX" "$SITE" || true
   else
     if [[ $SIGNED_STATE == enforce ]]; then
       eventually "site GridSite grid-hub Active over SWIM" site_phase_in "$SITE_CTX" grid-hub Active || true

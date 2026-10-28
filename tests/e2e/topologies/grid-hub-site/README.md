@@ -15,6 +15,8 @@ bash e2e-hub-site.sh down      # delete the clusters
 
 `MODES=pin` or `MODES=spiffe` runs one peer trust mode. `SIGNED_STATE=enforce` adds the signed state checks. `SKIP_BUILD=1` uses prebuilt images named by `IMAGE_PREFIX` and `IMAGE_TAG`. `KEEP=1` keeps the clusters. The script header lists every variable.
 
+On non-amd64 hosts, `up` pulls the amd64-only VCR image and loads it into the site cluster before applying the model workload. Kind nodes keep their native architecture; the container runtime VM needs amd64 emulation enabled for the VCR container.
+
 The script pins each LoadBalancer address from the MetalLB pool, so it knows the enrollment URL and SWIM seeds before install. The site gateway dials the mock model at its ClusterIP. A selectorless `grid-enrollment` Service in the site's `grid-enrollment` namespace forwards to the hub enrollment LoadBalancer, so the site operator enrolls by the Service name on the enrollment certificate.
 
 ## What It Asserts
@@ -23,6 +25,7 @@ For each mode in `MODES`, after it resets the `grid` and `grid-enrollment` names
 
 - The hub operator enrolls from its own invite, the site operator from the invite the example `kubectl` pipeline copies with its site label, and each identity carries its SPIFFE ID.
 - The hub GridSite for the site is Active, the site sees the hub over SWIM, the hub GridNetwork is Active with a connected site, and the operator renders the hub overlay with a remote candidate. The hub gateway routes on its static backends, not on that overlay.
+- In the `local` leg, neither operator has a SWIM Service, and neither own GridSite gets a `gatewayEndpoint` written to its spec. The site GridSite reaches `Connected=True` using `gateway.address` pointed at its in-cluster ClusterIP gateway Service.
 - The hub consumer gateway serves a chat completion over its static site backend, with `x-grid-provider-site: site-a`.
 - With the hub identity, the site gateway serves the same completion over mTLS. Without a client certificate the handshake fails with a TLS alert. `/health`, which the backend serves, a `../` traversal, an encoded traversal, and `/v1/modelsX` get a 404 with no provider header, and `DELETE` gets a 405.
 - The site gateway refuses `rogue`, an identity enrolled from its own invite: 403 in pin mode, a TLS alert in spiffe mode.

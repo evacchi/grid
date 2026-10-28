@@ -1,8 +1,8 @@
 //! Site gateway address self-discovery.
 //!
 //! Resolves the data-plane gateway address this operator advertises to SWIM
-//! peers (populates `GridSite.spec.gatewayEndpoint.address`): an explicit override wins,
-//! else a background poller discovers the Service `LoadBalancer` address.
+//! peers and uses for its own `GridSite`: an explicit override wins, else a
+//! background poller discovers the Service `LoadBalancer` address.
 
 use std::{sync::Arc, time::Duration};
 
@@ -45,7 +45,7 @@ pub struct Config {
     )]
     pub discovery_enabled: bool,
 
-    /// Explicit gateway address (host:port); skips discovery when set.
+    /// Explicit gateway address (host:port); skips discovery and supplies the own site's endpoint.
     ///
     /// Blank means unset here, unlike the discovery fields.
     #[arg(long = "gateway-address", env = "GRID_GATEWAY_ADDRESS")]
@@ -104,6 +104,12 @@ impl Config {
     }
 }
 
+/// The configured override, trimmed and empty values treated as unset.
+#[must_use]
+pub fn configured_address(config: &Config) -> Option<String> {
+    config.address_override().map(str::to_owned)
+}
+
 /// Resolve the gateway address: explicit override, else Service discovery.
 ///
 /// `Ok(None)` means no address yet.
@@ -125,10 +131,15 @@ pub async fn resolve(client: &Client, config: &Config) -> Result<Option<String>,
     Ok(discovery.into_address())
 }
 
-/// Poll for the gateway Service address and re-announce it via SWIM.
+/// Poll for the gateway Service address and publish it to controllers and SWIM.
 ///
 /// No-op when discovery is disabled or an explicit address override is set.
-pub async fn run_discovery_poller(client: Client, swim: Arc<SwimHandle>, config: Config) {
+pub async fn run_discovery_poller(
+    client: Client,
+    config: Config,
+    resolved_address: tokio::sync::watch::Sender<Option<String>>,
+    swim: tokio::sync::watch::Receiver<Option<Arc<SwimHandle>>>,
+) {
     if !config.discovery_enabled {
         tracing::info!("gateway address discovery disabled; skipping discovery poller");
         return;
@@ -140,22 +151,36 @@ pub async fn run_discovery_poller(client: Client, swim: Arc<SwimHandle>, config:
     let interval = config.discovery_interval();
     let interval_ms = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
     tracing::info!(interval_ms, "starting gateway address discovery poller");
-    poll_loop(&client, &swim, interval, &config).await;
+    poll_loop(&client, &resolved_address, &swim, interval, &config).await;
 }
 
 /// Inner polling loop; separated to satisfy clippy complexity lints.
-async fn poll_loop(client: &Client, swim: &SwimHandle, interval: Duration, config: &Config) -> ! {
+async fn poll_loop(
+    client: &Client,
+    resolved_address: &tokio::sync::watch::Sender<Option<String>>,
+    swim: &tokio::sync::watch::Receiver<Option<Arc<SwimHandle>>>,
+    interval: Duration,
+    config: &Config,
+) -> ! {
     let mut last: Option<Discovery> = None;
     loop {
-        tokio::time::sleep(interval).await;
         match discover_from_service(client, config).await {
             Ok(discovery) => {
                 log_discovery(&discovery, config, is_new(last.as_ref(), &discovery));
-                // Re-announce even if unchanged: a peer may have joined since.
-                if let Discovery::Found(addr) = &discovery
-                    && let Err(e) = swim.set_gateway_address(Some(addr.clone()))
+                let address = discovery.clone().into_address();
+                resolved_address.send_if_modified(|current| {
+                    if current == &address {
+                        false
+                    } else {
+                        *current = address.clone();
+                        true
+                    }
+                });
+                if let Some(addr) = &address
+                    && let Some(handle) = swim.borrow().as_ref()
+                    && let Err(error) = handle.set_gateway_address(Some(addr.clone()))
                 {
-                    tracing::warn!(error = %e, "failed to update gateway address on SWIM handle");
+                    tracing::warn!(%error, "failed to update gateway address on SWIM handle");
                 }
                 last = Some(discovery);
             },
@@ -163,6 +188,7 @@ async fn poll_loop(client: &Client, swim: &SwimHandle, interval: Duration, confi
                 tracing::warn!(error = %e, "gateway discovery poll failed; will retry");
             },
         }
+        tokio::time::sleep(interval).await;
     }
 }
 
