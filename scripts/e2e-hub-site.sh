@@ -977,7 +977,7 @@ assert_site_route() {
 }
 
 assert_health() {
-  local ctx restarts dir hits warns
+  local ctx restarts dir hits warns self_probe_ip
   for ctx in "$HUB_CTX" "$SITE_CTX"; do
     restarts=$(kubectl --context "$ctx" get pods -A -o json | jq -r --arg a "$NS" --arg b "$ENS" '.items[]
       | select(.metadata.namespace == $a or .metadata.namespace == $b) | .metadata.name as $p
@@ -996,12 +996,34 @@ assert_health() {
       continue
     fi
     dir="$ARTIFACTS/$MODE/$ctx"
-    # Pingora logs refused handshakes at ERROR: gateway TCP probes always, and the
-    # deliberate-refusal checks from REFUSALS_FROM on.
-    hits=$(cat "$dir"/*.log | strip_ansi | grep -E ' (ERROR)|panic|fatal' \
-      | awk -v from="$REFUSALS_FROM" '/^\[pod\/grid-gateway-[^\/]+\/praxis\] .*Downstream handshake error / {
-          if ($0 ~ /tls handshake eof$/ || (from != "" && substr($2, 1, 19) >= from)) next
-        } { print }' | sort -u || true)
+    self_probe_ip=""
+    if [[ $MODE == local && $ctx == "$SITE_CTX" ]]; then
+      self_probe_ip=$(kubectl --context "$ctx" -n "$NS" get pods \
+        -l app.kubernetes.io/instance=grid-operator -o jsonpath='{.items[0].status.podIP}' || true)
+    fi
+    # Pingora logs refused handshakes at ERROR: gateway TCP probes always, the site's
+    # own mTLS probe under Local membership, and the deliberate-refusal checks from
+    # REFUSALS_FROM on. Filter only the own probe's paired identity rejection.
+    hits=$(cat "$dir"/*.log | strip_ansi | awk -v refusal_from="$REFUSALS_FROM" \
+      -v self_site="$SITE" -v self_ip="$self_probe_ip" '
+        FNR == 1 { self_probe_rejection = 0 }
+        /^\[pod\/grid-gateway-[^\/]+\/praxis\] .*peer SPIFFE ID not in trusted_spiffe_ids / \
+          && self_ip != "" && index($0, "peer_id=spiffe://grid.internal/site/" self_site) > 0 {
+          self_probe_rejection = 1
+          next
+        }
+        /^\[pod\/grid-gateway-[^\/]+\/praxis\] .*Downstream handshake error / {
+          expected_self_probe = self_probe_rejection && index($0, "from " self_ip ":") > 0 \
+            && $0 ~ /invalid peer certificate: ApplicationVerificationFailure$/
+          self_probe_rejection = 0
+          if (expected_self_probe || $0 ~ /tls handshake eof$/ \
+            || (refusal_from != "" && substr($2, 1, 19) >= refusal_from)) { next }
+        }
+        {
+          self_probe_rejection = 0
+          if ($0 ~ / (ERROR)|panic|fatal/) { print }
+        }
+      ' | sort -u || true)
     warns=$(cat "$dir"/*.log | strip_ansi | grep -E ' WARN' | sort -u || true)
     if [[ -n $warns ]]; then
       printf 'WARN [%s] %s: %s distinct WARN lines\n%s\n' "$MODE" "$ctx" "$(wc -l <<<"$warns")" "$warns"
