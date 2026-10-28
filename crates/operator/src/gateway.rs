@@ -172,7 +172,7 @@ async fn poll_loop(
                     if current == &address {
                         false
                     } else {
-                        *current = address.clone();
+                        current.clone_from(&address);
                         true
                     }
                 });

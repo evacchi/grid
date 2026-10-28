@@ -384,9 +384,8 @@ async fn main() {
                     ready: Arc::clone(&ready),
                     routes: routes.clone(),
                 },
-                swim_tx,
+                (swim_tx, swim_handle_tx),
                 membership_declared,
-                swim_handle_tx,
             ),
             writers,
             async { metrics_server.await? },
@@ -599,6 +598,12 @@ enum SwimStage {
 /// SWIM startup progress, watched by what waits on the advertise address.
 type SwimStartup = tokio::sync::watch::Receiver<SwimStage>;
 
+/// Senders that publish SWIM lifecycle progress and the running handle.
+type SwimStartupSenders = (
+    tokio::sync::watch::Sender<SwimStage>,
+    tokio::sync::watch::Sender<Option<Arc<swim_runtime::SwimHandle>>>,
+);
+
 /// Start SWIM off the controllers' path, marking ready once it runs or is not configured.
 ///
 /// # Errors
@@ -608,10 +613,10 @@ async fn start_swim(
     cli: Cli,
     ctx: Arc<OperatorCtx>,
     restart: StandDown,
-    started: tokio::sync::watch::Sender<SwimStage>,
+    startup: SwimStartupSenders,
     membership_declared: bool,
-    swim_handle: tokio::sync::watch::Sender<Option<Arc<swim_runtime::SwimHandle>>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (started, swim_handle) = startup;
     let client = ctx.client.clone();
     let retry = restart.clone();
     let ready = Arc::clone(&restart.ready);
