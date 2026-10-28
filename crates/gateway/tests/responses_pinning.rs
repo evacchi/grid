@@ -1,5 +1,10 @@
 //! Responses API ids carry the site that stored them, and requests naming one go back there.
 
+#[path = "support/logs.rs"]
+mod logs;
+#[path = "support/ports.rs"]
+mod ports;
+
 #[cfg(test)]
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
 #[allow(
@@ -22,23 +27,17 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use super::ports::free_port;
+
     /// How long the gateway may take to start listening.
     const DEADLINE: Duration = Duration::from_secs(20);
-
-    fn free_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0")
-            .expect("bind")
-            .local_addr()
-            .expect("addr")
-            .port()
-    }
 
     /// What the backend received: the request line and the body.
     type Seen = Arc<Mutex<Vec<(String, String)>>>;
 
     /// A Responses API backend that stores nothing and names every response `resp_abc`.
     fn backend() -> (u16, Seen) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind backend");
+        let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind backend");
         let port = listener.local_addr().expect("addr").port();
         let seen: Seen = Arc::default();
         let recorded = Arc::clone(&seen);
@@ -179,6 +178,7 @@ mod tests {
 
     impl Drop for Gateway {
         fn drop(&mut self) {
+            super::logs::gateway_output_on_failure(&self.output);
             let _killed = self.child.kill();
             let _reaped = self.child.wait();
         }
