@@ -70,8 +70,11 @@ MODEL=Qwen/Qwen3-0.6B
 ENROLL_HOST=enroll.grid.example.com
 ENROLL_PORT=8443
 FORGE_STATE="$ROOT/.forge/$PREFIX"
-# Rootless podman's kind provider reads its own network variable.
-export KIND_EXPERIMENTAL_PODMAN_NETWORK=${KIND_EXPERIMENTAL_PODMAN_NETWORK:-$PREFIX-net}
+# Rootless podman's kind provider reads its own network variable. Leave it unset for Docker,
+# or Forge may try to inspect a Podman network that Docker never created.
+if [[ ${KIND_EXPERIMENTAL_PROVIDER:-} == podman || -n ${KIND_EXPERIMENTAL_PODMAN_NETWORK:-} ]]; then
+  export KIND_EXPERIMENTAL_PODMAN_NETWORK=${KIND_EXPERIMENTAL_PODMAN_NETWORK:-$PREFIX-net}
+fi
 
 WORK=$(mktemp -d)
 PF_PID=""
