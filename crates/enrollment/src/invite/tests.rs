@@ -588,6 +588,7 @@ mod live {
         }
     }
 
+    /// Checks successful requests reset retry delay without refunding earlier failures.
     #[tokio::test]
     async fn a_reached_service_resets_delay_without_refunding_the_retry_budget() {
         let (state, mut minter, _admin) = serve("good-admin").await;
@@ -597,12 +598,20 @@ mod live {
             max: Duration::from_millis(20),
         };
         minter.retry = Retry::new(budget);
+        assert!(
+            minter.retry.failed().await && minter.retry.failed().await,
+            "prior connection failures spend the shared budget"
+        );
+        let attempts_left = minter.retry.left;
         let secrets = Fake::new(OnCreate::Store).holding("grid-invite-site-a", "kept");
         let invites = [invite("site-a"), invite("site-b"), invite("site-c")];
         invite_all(&secrets, &mut minter, "grid-invite-", &invites)
             .await
             .expect("every site is invited");
-        assert!(minter.retry.left < budget.attempts, "site-b hit the outage and retried");
+        assert_eq!(
+            minter.retry.left, attempts_left,
+            "reaching the service does not refund attempts"
+        );
         assert_eq!(
             minter.retry.delay, budget.initial,
             "reaching the service reset the delay"
