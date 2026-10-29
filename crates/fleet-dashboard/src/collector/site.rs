@@ -398,7 +398,10 @@ mod tests {
         let registry = Metrics::new().unwrap();
         let short = Duration::from_millis(100);
         install_provider();
-        let source = Source::PerSite(PerSiteSource::new(secrets(&[("site-spoke1", TOKEN, &[])]), TIMEOUT));
+        let source = Source::PerSite(PerSiteSource::new(
+            secrets(&[("site-spoke1", TOKEN, &[])]),
+            Duration::from_secs(2),
+        ));
         let poller = SitePoller {
             source: &source,
             queries: &queries,

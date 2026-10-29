@@ -589,6 +589,39 @@ mod live {
     }
 
     #[tokio::test]
+    async fn a_reached_service_resets_delay_without_refunding_the_retry_budget() {
+        let (state, mut minter, _admin) = serve("good-admin").await;
+        let budget = Backoff {
+            attempts: 100,
+            initial: Duration::from_millis(5),
+            max: Duration::from_millis(20),
+        };
+        minter.retry = Retry::new(budget);
+        assert!(
+            minter.retry.failed().await && minter.retry.failed().await,
+            "prior connection failures spend the shared budget"
+        );
+        let attempts_left = minter.retry.left;
+        let secrets = Fake::new(OnCreate::Store).holding("grid-invite-site-a", "kept");
+        let invites = [invite("site-a"), invite("site-b"), invite("site-c")];
+        invite_all(&secrets, &mut minter, "grid-invite-", &invites)
+            .await
+            .expect("every site is invited");
+        assert_eq!(
+            minter.retry.left, attempts_left,
+            "reaching the service does not refund attempts"
+        );
+        assert_eq!(
+            minter.retry.delay, budget.initial,
+            "reaching the service reset the delay"
+        );
+        for site in ["site-b", "site-c"] {
+            let token = secrets.token_for(&format!("grid-invite-{site}")).expect("minted");
+            assert!(live(&state, &token).await, "{site} holds a live token");
+        }
+    }
+
+    #[tokio::test]
     async fn a_full_outage_spends_one_budget_and_names_every_site() {
         let (_state, mut minter, _admin) = serve_after("good-admin", Duration::from_secs(3600)).await;
         let invites = [invite("site-a"), invite("site-b"), invite("site-c")];

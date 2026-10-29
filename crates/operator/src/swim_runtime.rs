@@ -1443,6 +1443,7 @@ pub(crate) fn test_handle() -> (SwimHandle, watch::Receiver<Option<String>>) {
         broadcast_tx,
         seed_tx,
         key_tx,
+        trust_update_tx: mpsc::unbounded_channel().0,
         gateway_tx,
         runtime_tx: watch::channel(true).0,
         withdraw_tx: mpsc::channel(16).0,
