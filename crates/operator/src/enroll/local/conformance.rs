@@ -513,6 +513,7 @@ async fn invariant_8_no_signer_reads_rotation_on_schedule_no_signer_and_never_bl
     assert_eq!(degraded["status"], "False");
 }
 
+/// Checks that GridSite reconciliation leaves the own-site peer rollup to its designated writer.
 #[tokio::test]
 async fn invariant_5_the_own_grid_site_carries_only_the_peer_rollup_and_the_network_one_writer_each() {
     let api = seeded();

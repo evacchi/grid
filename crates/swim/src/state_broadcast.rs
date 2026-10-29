@@ -4571,6 +4571,7 @@ mod tests {
         );
     }
 
+    /// Checks that an address broadcast is retained for a remote site.
     #[test]
     fn handler_stores_gateway_address_from_extended_broadcast() {
         let mut handler = StateBroadcastHandler::new("site-local".to_owned());
@@ -4593,6 +4594,7 @@ mod tests {
         );
     }
 
+    /// Checks that a newer empty gateway marker removes the retained address.
     #[test]
     fn handler_withdraws_gateway_address_from_empty_marker() {
         let mut handler = StateBroadcastHandler::new("site-local".to_owned());

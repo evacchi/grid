@@ -87,6 +87,7 @@ use operator::{
 // Main
 // ---------------------------------------------------------------------------
 
+/// Starts the operator and its controllers.
 #[tokio::main]
 #[expect(
     clippy::large_stack_frames,

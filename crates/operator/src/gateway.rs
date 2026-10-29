@@ -378,6 +378,7 @@ mod tests {
         Service::default()
     }
 
+    /// Checks that repeating an address does not notify watch receivers.
     #[test]
     fn publishing_an_unchanged_address_does_not_notify_watchers() {
         let (resolved_address, mut address_rx) = tokio::sync::watch::channel(None);
@@ -392,6 +393,7 @@ mod tests {
         assert!(address_rx.has_changed().is_ok_and(|changed| !changed));
     }
 
+    /// Checks that a later poll applies an address after the SWIM handle appears.
     #[test]
     fn publishing_updates_a_swim_handle_that_appears_afterward() {
         let (resolved_address, _address_rx) = tokio::sync::watch::channel(None);
@@ -416,6 +418,7 @@ mod tests {
         );
     }
 
+    /// Checks that a lost address clears the value held by the SWIM handle.
     #[test]
     fn publishing_address_loss_withdraws_it_from_swim() {
         let (resolved_address, _address_rx) = tokio::sync::watch::channel(None);

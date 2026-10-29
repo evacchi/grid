@@ -1027,6 +1027,7 @@ mod tests {
         )
     }
 
+    /// Checks that Connected status preserves each lifecycle reason and its verdict.
     #[test]
     fn connected_names_the_cause() {
         let cases = [
@@ -1170,6 +1171,7 @@ mod tests {
         assert_eq!(reason, "EndpointsDeclared");
     }
 
+    /// Checks the missing-address reason for an own site with no declared endpoint.
     #[test]
     fn pending_declared_without_a_gateway_reports_undeclared() {
         let mut site = declared_at("peer.example.com:443");
@@ -1190,6 +1192,7 @@ mod tests {
         );
     }
 
+    /// Checks that a resolved operator address advances its own site without changing the API spec.
     #[test]
     fn local_gateway_override_advances_the_own_site_without_mutating_its_spec() {
         let site = site_no_egress(Some(GridSitePhase::Pending));
@@ -1218,6 +1221,7 @@ mod tests {
         assert_eq!(reason, "EndpointsDeclared");
     }
 
+    /// Checks declared-endpoint precedence and keeps the local override off peer sites.
     #[test]
     fn declared_own_endpoint_wins_and_the_local_override_does_not_apply_to_peers() {
         let own_site = site_with_egress(Some(GridSitePhase::Pending), "declared.test:8443");
