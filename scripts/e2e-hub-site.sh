@@ -402,7 +402,11 @@ site_reports_enrolled() { [[ $(network_condition "$1" Enrolled) == True/Enrolled
 own_site_connected() { [[ $(k "$1" get gridsite "$2" \
   -o jsonpath='{.status.conditions[?(@.type=="Connected")].status}/{.status.conditions[?(@.type=="Connected")].reason}') == True/Connected ]]; }
 
-own_site_gateway_not_in_spec() { [[ -z $(k "$1" get gridsite "$2" -o jsonpath='{.spec.gatewayEndpoint.address}') ]]; }
+own_site_gateway_not_in_spec() {
+  local address
+  address=$(k "$1" get gridsite "$2" -o jsonpath='{.spec.gatewayEndpoint.address}') || return 1
+  [[ -z $address ]]
+}
 
 cluster_ip_gateway() {
   kubectl --context "$1" -n "$NS" apply -f - >/dev/null <<EOF

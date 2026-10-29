@@ -804,7 +804,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 | `GatewayAddressKnown` | Connecting | Gateway address received; advancing to Connecting |
 | `EndpointsDeclared` | Connecting | Declared site names a dialable gateway endpoint, which also gives its signals endpoint; advancing without discovery |
 | `GatewayAddressMissing` | Discovered, Connecting, or Unreachable | No gateway address known (see `GRID_GATEWAY_ADDRESS`), or a previously probed site lost it |
-| `GatewayAddressUndeclared` | Pending, Discovered, Connecting, or Unreachable | This operator's own site has neither a declared endpoint nor a configured or discovered gateway address; set `gateway.address` |
+| `GatewayAddressUndeclared` | Pending, Discovered, Connecting, or Unreachable | This operator's own site has neither a usable declared endpoint nor a configured or discovered address. Applies under both Swim and Local membership; emitted as a `Warning` event. Set `gateway.address` or declare the endpoint. |
 | `TlsVerified` | Active | TLS handshake succeeded; certificate chain, identity, and configured pin verified |
 | `IdentityVerificationRequired` | Connecting | TCP endpoint is reachable, but plaintext cannot establish the gateway identity |
 | `PlaintextUnreachable` | Connecting or Unreachable | TCP probe failed (explicit Plaintext mode) |
@@ -936,9 +936,13 @@ time by provider gateway filters.
 **Single-site / combined-site deployments:** Site discovery is driven by *remote*
 SWIM peers - the `Pending -> Discovered` transition above requires a remote peer
 observed Alive. A single or combined cluster has no peers, so its own `GridSite`
-stays `Pending` with reason `AwaitingDiscovery`. **This is expected and does not
-block local serving:** local `InferenceProvider`s are eligible regardless of
-`GridSite.status.phase`; only *remote* CRDT provider records are phase-gated (see
+stays `Pending` with reason `AwaitingDiscovery` when a usable gateway address is
+available. If its endpoint is undeclared and gateway discovery has no address,
+reconciliation uses `GatewayAddressUndeclared` under both Swim and Local
+membership; this reason is emitted as a `Warning` event. **Either reason is
+expected and does not block local serving:** local `InferenceProvider`s are
+eligible regardless of `GridSite.status.phase`; only *remote* CRDT provider
+records are phase-gated (see
 "Routing eligibility" above). Do not add SWIM seeds or extra operator replicas to
 try to force the site `Active` - there is no second site to discover, and a lone
 operator legitimately runs a single-node mesh with zero peers. The `Active` phase

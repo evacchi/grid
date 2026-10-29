@@ -167,21 +167,7 @@ async fn poll_loop(
         match discover_from_service(client, config).await {
             Ok(discovery) => {
                 log_discovery(&discovery, config, is_new(last.as_ref(), &discovery));
-                let address = discovery.clone().into_address();
-                resolved_address.send_if_modified(|current| {
-                    if current == &address {
-                        false
-                    } else {
-                        current.clone_from(&address);
-                        true
-                    }
-                });
-                if let Some(addr) = &address
-                    && let Some(handle) = swim.borrow().as_ref()
-                    && let Err(error) = handle.set_gateway_address(Some(addr.clone()))
-                {
-                    tracing::warn!(%error, "failed to update gateway address on SWIM handle");
-                }
+                publish_address(resolved_address, swim, discovery.address());
                 last = Some(discovery);
             },
             Err(e) => {
@@ -206,12 +192,42 @@ enum Discovery {
 }
 
 impl Discovery {
+    /// The discovered address, if any, without consuming the outcome.
+    fn address(&self) -> Option<&str> {
+        match self {
+            Self::Found(addr) => Some(addr),
+            Self::NoAddress | Self::NotLoadBalancer(_) | Self::NoService => None,
+        }
+    }
+
     /// The discovered address, if any.
     fn into_address(self) -> Option<String> {
         match self {
             Self::Found(addr) => Some(addr),
             Self::NoAddress | Self::NotLoadBalancer(_) | Self::NoService => None,
         }
+    }
+}
+
+/// Publish a discovery result to controllers and any active SWIM runtime.
+fn publish_address(
+    resolved_address: &tokio::sync::watch::Sender<Option<String>>,
+    swim: &tokio::sync::watch::Receiver<Option<Arc<SwimHandle>>>,
+    address: Option<&str>,
+) {
+    resolved_address.send_if_modified(|current| {
+        if current.as_deref() == address {
+            false
+        } else {
+            *current = address.map(str::to_owned);
+            true
+        }
+    });
+    if let Some(address) = address
+        && let Some(handle) = swim.borrow().as_ref()
+        && let Err(error) = handle.set_gateway_address(Some(address.to_owned()))
+    {
+        tracing::warn!(%error, "failed to update gateway address on SWIM handle");
     }
 }
 
@@ -358,6 +374,44 @@ mod tests {
 
     fn svc_no_status() -> Service {
         Service::default()
+    }
+
+    #[test]
+    fn publishing_an_unchanged_address_does_not_notify_watchers() {
+        let (resolved_address, mut address_rx) = tokio::sync::watch::channel(None);
+        let (_swim_tx, swim_rx) = tokio::sync::watch::channel(None);
+
+        publish_address(&resolved_address, &swim_rx, Some("gateway.test:8080"));
+        assert!(address_rx.has_changed().is_ok_and(|changed| changed));
+        drop(address_rx.borrow_and_update());
+
+        publish_address(&resolved_address, &swim_rx, Some("gateway.test:8080"));
+
+        assert!(address_rx.has_changed().is_ok_and(|changed| !changed));
+    }
+
+    #[test]
+    fn publishing_updates_a_swim_handle_that_appears_afterward() {
+        let (resolved_address, _address_rx) = tokio::sync::watch::channel(None);
+        let (swim_tx, swim_rx) = tokio::sync::watch::channel(None);
+        let (handle, _gateway_rx) = crate::swim_runtime::test_handle();
+        let handle = Arc::new(handle);
+
+        publish_address(&resolved_address, &swim_rx, Some("gateway.test:8080"));
+        assert_eq!(
+            *resolved_address.borrow(),
+            Some("gateway.test:8080".to_owned()),
+            "the first publication reaches controller watchers"
+        );
+
+        assert!(swim_tx.send(Some(Arc::clone(&handle))).is_ok());
+        publish_address(&resolved_address, &swim_rx, Some("gateway.test:8080"));
+
+        assert_eq!(
+            handle.gateway_address().as_deref(),
+            Some("gateway.test:8080"),
+            "a later poll applies the address to the newly available SWIM handle"
+        );
     }
 
     #[test]
