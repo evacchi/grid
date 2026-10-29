@@ -360,6 +360,37 @@ impl ServedModelStore {
         }
     }
 
+    /// Select a fresh discovered inventory in the signed SWIM wire format.
+    #[must_use]
+    pub(crate) fn select_for_gossip(
+        &self,
+        provider: &InferenceProvider,
+        origin_site: &str,
+        grid_id: &str,
+    ) -> Option<swim::ModelInventory> {
+        provider.spec.model_discovery.as_ref()?;
+        let network_id = provider.spec.grid_network_ref.as_str();
+        let provider_id = provider.metadata.name.as_deref()?;
+        let instance_uid = provider.metadata.uid.as_deref()?;
+        let selected = self.select_for(provider)?;
+        if selected.is_static() {
+            return None;
+        }
+        let expiry =
+            time::OffsetDateTime::parse(selected.expires_at()?, &time::format_description::well_known::Rfc3339).ok()?;
+        let expires_at_ms = u64::try_from(expiry.unix_timestamp_nanos() / 1_000_000).ok()?;
+        Some(swim::ModelInventory {
+            origin_site: origin_site.to_owned(),
+            grid_id: grid_id.to_owned(),
+            network_id: network_id.to_owned(),
+            provider_id: provider_id.to_owned(),
+            provider_uid: instance_uid.to_owned(),
+            revision: expires_at_ms,
+            expires_at_ms,
+            models: selected.models().to_vec(),
+        })
+    }
+
     /// Fresh models, expiry deadline, and producing generation for one provider.
     fn fresh_inventory(&self, provider: &InferenceProvider) -> Option<DiscoveredModelInventory> {
         let name = provider.metadata.name.as_deref()?;
@@ -952,6 +983,57 @@ mod tests {
             "candidate carries inventory expiry"
         );
         assert!(state.models.is_empty(), "fresh discovered models must not be gossiped");
+    }
+
+    #[test]
+    fn fresh_discovered_inventory_is_selected_for_signed_gossip() {
+        let provider = discovery_provider("p", &serde_json::json!({}));
+        let store = ServedModelStore::new();
+        refresh(&store, round(&[("p", Some(&["discovered"]))]), TTL);
+
+        let inventory = store
+            .select_for_gossip(&provider, "site-a", "grid-a")
+            .unwrap_or_else(|| std::process::abort());
+
+        assert_eq!(
+            inventory.origin_site, "site-a",
+            "inventory must identify its owner site"
+        );
+        assert_eq!(inventory.grid_id, "grid-a", "inventory must be scoped to its grid");
+        assert_eq!(inventory.network_id, "net", "inventory must identify its GridNetwork");
+        assert_eq!(inventory.provider_id, "p", "inventory must identify its provider");
+        assert_eq!(
+            inventory.provider_uid, "test-provider-uid",
+            "inventory must identify its provider instance"
+        );
+        assert_eq!(
+            inventory.models,
+            owned(&["discovered"]),
+            "only fresh discovered names are gossiped"
+        );
+        assert_eq!(
+            inventory.revision, inventory.expires_at_ms,
+            "inventory revision must use the served-set expiry"
+        );
+    }
+
+    #[test]
+    fn static_and_expired_inventories_are_not_selected_for_gossip() {
+        let static_provider = test_provider("static", None);
+        let discovered_provider = discovery_provider("dynamic", &serde_json::json!({}));
+        let store = ServedModelStore::new();
+        refresh(&store, round(&[("dynamic", Some(&["discovered"]))]), Duration::ZERO);
+
+        assert!(
+            store.select_for_gossip(&static_provider, "site-a", "grid-a").is_none(),
+            "static configuration must not enter model gossip"
+        );
+        assert!(
+            store
+                .select_for_gossip(&discovered_provider, "site-a", "grid-a")
+                .is_none(),
+            "expired discovery must not enter model gossip"
+        );
     }
 
     #[test]

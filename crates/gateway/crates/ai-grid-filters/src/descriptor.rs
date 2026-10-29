@@ -12,6 +12,7 @@ use std::{
 
 use praxis_filter::FilterError;
 use serde::Deserialize;
+use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::{
     dial::Dialed,
@@ -109,6 +110,10 @@ pub struct CandidateConfig {
     #[serde(default)]
     pub credential: Option<CandidateCredential>,
 
+    /// RFC 3339 UTC deadline for a discovered model inventory.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+
     /// Whether this candidate is fresh (default: `true`).
     #[serde(default = "default_fresh")]
     pub fresh: bool,
@@ -189,6 +194,9 @@ pub struct RouteCandidate {
     /// Optional final-hop credential reference.
     pub credential: Option<CandidateCredential>,
 
+    /// Validated UTC inventory deadline, enforced on every request.
+    pub expires_at: Option<OffsetDateTime>,
+
     /// Whether this candidate is fresh. Preserved from config, but Grid owns
     /// freshness ordering.
     pub fresh: bool,
@@ -227,8 +235,28 @@ impl RouteCandidate {
                 >= i128::from(deadline)
         })
     }
+
+    /// Whether the inventory deadline has reached the contract's 30-second clock-lag margin.
+    pub(crate) fn is_expired_at(&self, now: OffsetDateTime) -> bool {
+        self.expires_at
+            .is_some_and(|deadline| now >= deadline.saturating_sub(time::Duration::seconds(30)))
+    }
 }
 
+/// Parse an optional discovered-model deadline before it enters a routing snapshot.
+fn candidate_expiry(index: usize, value: Option<&str>) -> Result<Option<OffsetDateTime>, FilterError> {
+    value
+        .map(|value| {
+            let deadline = OffsetDateTime::parse(value, &Rfc3339).map_err(|error| -> FilterError {
+                format!("grid: candidates[{index}].expires_at must be RFC 3339 UTC: {error}").into()
+            })?;
+            if deadline.offset() != UtcOffset::UTC {
+                return Err(format!("grid: candidates[{index}].expires_at must use UTC").into());
+            }
+            Ok(deadline)
+        })
+        .transpose()
+}
 /// Build a deterministic stable ID from candidate identity fields.
 pub(crate) fn default_stable_id(kind: CapabilityKind, name: &str, site: &str, cluster: &str) -> Arc<str> {
     Arc::from(format!("{}/{name}/{site}/{cluster}", kind.as_str()))
@@ -305,6 +333,7 @@ fn validate_candidates_with_empty(
             silent: false,
             cluster: Arc::from(cand.cluster.as_str()),
             credential: cand.credential,
+            expires_at: candidate_expiry(index, cand.expires_at.as_deref())?,
             fresh: cand.fresh,
             kind: cand.kind,
             name: Arc::from(cand.name.as_str()),
@@ -460,6 +489,41 @@ mod tests {
             publishes_load: true,
             site: site.to_owned(),
             stable_id: None,
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn inventory_expiry_is_enforced_at_the_clock_lag_boundary() {
+        let deadline = OffsetDateTime::parse("2030-01-01T00:01:00Z", &Rfc3339).unwrap();
+        let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
+        raw.expires_at = Some("2030-01-01T00:01:00Z".to_owned());
+        let candidates = validate_serving_candidates(vec![raw]).unwrap();
+        let candidate = candidates.first().unwrap();
+        assert!(
+            !candidate.is_expired_at(deadline.saturating_sub(time::Duration::seconds(31))),
+            "route remains usable before the safety margin"
+        );
+        assert!(
+            candidate.is_expired_at(deadline.saturating_sub(time::Duration::seconds(30))),
+            "route expires exactly at the safety margin"
+        );
+        assert!(
+            candidate.is_expired_at(deadline),
+            "deadline never receives a grace period"
+        );
+    }
+
+    #[test]
+    fn malformed_or_non_utc_inventory_expiry_is_rejected() {
+        for value in ["not-a-timestamp", "2030-01-01T01:00:00+01:00"] {
+            let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
+            raw.expires_at = Some(value.to_owned());
+            let error = validate_serving_candidates(vec![raw]).expect_err("invalid deadline must refuse the snapshot");
+            assert!(
+                error.to_string().contains("expires_at"),
+                "error identifies the invalid deadline"
+            );
         }
     }
 

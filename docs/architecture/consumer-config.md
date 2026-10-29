@@ -213,6 +213,11 @@ model-discovery contract carries `expires_at` as RFC 3339 UTC and expires the ro
 when gateway UTC reaches the deadline minus 30 seconds, covering up to 30
 seconds of clock lag.
 
+The project-owned `grid-gateway` implements this contract for `grid_site_route`.
+Its serving config preserves `expires_at`, and request selection checks the
+deadline even when the gateway retains an older snapshot or follows a stored-state pin.
+This does not declare support for the separately released Praxis AI `intelligent_route` filter.
+
 The embedded gateway's filter chain and upstream cluster definitions remain in
 its startup Praxis configuration, but its changing candidate list is not a
 startup-only inline list: it comes from the watched Grid serving ConfigMap.

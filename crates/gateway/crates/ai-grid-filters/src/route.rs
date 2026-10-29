@@ -31,6 +31,7 @@ use praxis_filter::{
     parse_filter_config,
 };
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 use crate::{
     control::Tuning,
@@ -98,9 +99,15 @@ enum RouteDecision {
 
 /// Resolve the empty revision before preserving a prior filter's selection.
 fn route_decision(snapshot: &RouteSnapshot, earlier_selected: bool) -> RouteDecision {
-    if snapshot.candidates.is_empty() {
+    let now = OffsetDateTime::now_utc();
+    if snapshot.candidates.iter().all(|candidate| candidate.is_expired_at(now)) {
         RouteDecision::NoRoute
-    } else if earlier_selected {
+    } else if earlier_selected
+        && snapshot
+            .candidates
+            .iter()
+            .all(|candidate| candidate.expires_at.is_none())
+    {
         RouteDecision::KeepEarlier
     } else {
         RouteDecision::Select
@@ -759,7 +766,10 @@ impl HttpFilter for GridSiteRouteFilter {
                 return Ok(refuse(Refused::NoRoute, "", self.turn.fetch_add(1, Ordering::Relaxed)));
             },
             RouteDecision::KeepEarlier => return Ok(FilterAction::Continue),
-            RouteDecision::Select => {},
+            RouteDecision::Select => {
+                ctx.cluster = None;
+                ctx.upstream = None;
+            },
         }
         // A copy of the request reference, so the model outlives writes to ctx.
         let request = ctx.request;
@@ -992,8 +1002,9 @@ fn pinned_target<'snap>(
     if at_site.peek().is_none() {
         return Target::Gone;
     }
+    let now = OffsetDateTime::now_utc();
     at_site
-        .find(|candidate| is_admitted_for_new_request(candidate.admission_state))
+        .find(|candidate| is_admitted_for_new_request(candidate.admission_state) && !candidate.is_expired_at(now))
         .map_or(Target::Unavailable, Target::Found)
 }
 
@@ -1312,6 +1323,7 @@ fn matching<'snap, 'req>(
 where
     'snap: 'req,
 {
+    let now = OffsetDateTime::now_utc();
     snapshot
         .candidates
         .iter()
@@ -1322,6 +1334,7 @@ where
             candidate.kind == kind
                 && &*candidate.name == name
                 && is_admitted_for_new_request(candidate.admission_state)
+                && !candidate.is_expired_at(now)
                 && routable(candidate)
         })
 }
@@ -1510,6 +1523,7 @@ pub(crate) mod tests {
             publishes_load: true,
             site: site.to_owned(),
             stable_id: None,
+            expires_at: None,
         }])
         .unwrap();
         candidates[0].admission_state = admission;
@@ -1534,27 +1548,10 @@ pub(crate) mod tests {
     fn queued(sites: &[(&str, f64, AdmissionState)]) -> RouteSnapshot {
         let mut sorted = sites.to_vec();
         sorted.sort_by(|left, right| left.1.total_cmp(&right.1));
-        let mut candidates = validate_candidates(
-            sorted
-                .iter()
-                .map(|(site, ..)| CandidateConfig {
-                    expires_at_ms: None,
-                    stable_id: None,
-                    cluster: format!("pool-{site}"),
-                    credential: None,
-                    admission: AdmissionState::default(),
-                    fresh: true,
-                    kind: CapabilityKind::InferenceModel,
-                    name: "llama".to_owned(),
-                    publishes_load: true,
-                    site: (*site).to_owned(),
-                })
-                .collect(),
-        )
-        .unwrap();
-        for (candidate, (_, _, admission)) in candidates.iter_mut().zip(&sorted) {
-            candidate.admission_state = *admission;
-        }
+        let candidates = sorted
+            .iter()
+            .flat_map(|(site, _, admission)| one("llama", site, &format!("pool-{site}"), *admission))
+            .collect();
         let mut snapshot = RouteSnapshot::from_static(candidates, Arc::from("a"));
         snapshot.scores = sorted.iter().map(|(_, queue, _)| *queue).collect();
         snapshot
@@ -1716,6 +1713,7 @@ pub(crate) mod tests {
                 .map(|(name, cluster)| CandidateConfig {
                     expires_at_ms: None,
                     stable_id: None,
+                    expires_at: None,
                     cluster: cluster.to_owned(),
                     credential: None,
                     admission: AdmissionState::default(),
@@ -1980,6 +1978,60 @@ pub(crate) mod tests {
             Arc::from("east"),
         );
         assert_eq!(unserved(&excluded, "llama", |_| false), Refused::NotReady);
+    }
+
+    #[test]
+    fn expired_inventory_cannot_route_from_a_retained_snapshot() {
+        let mut candidates = one("llama", "east", "expired-pool", AdmissionState::NewAndExisting);
+        candidates[0].expires_at = Some(OffsetDateTime::now_utc().saturating_add(time::Duration::seconds(29)));
+        let snapshot = RouteSnapshot::from_static(candidates.clone(), Arc::from("east"));
+        assert!(
+            select_spread(
+                &snapshot,
+                CapabilityKind::InferenceModel,
+                "llama",
+                0,
+                |_| true,
+                &KeepAll
+            )
+            .is_none(),
+            "expired inventory cannot be selected even without a config reload"
+        );
+        assert!(
+            matches!(
+                pinned_target(&snapshot, None, Some("llama"), TEST_NOW_MS),
+                Target::Unavailable
+            ),
+            "stored-state pins cannot bypass inventory expiry"
+        );
+        assert_eq!(
+            route_decision(&snapshot, true),
+            RouteDecision::NoRoute,
+            "an earlier filter choice cannot bypass an expired snapshot"
+        );
+        candidates.extend(one("llama", "west", "static-pool", AdmissionState::NewAndExisting));
+        assert_eq!(
+            front(candidates, CapabilityKind::InferenceModel, "llama").as_deref(),
+            Some("static-pool"),
+            "a static alternative remains routable after discovered inventory expires"
+        );
+    }
+
+    #[test]
+    fn fresh_inventory_routes_and_revalidates_an_earlier_selection() {
+        let mut candidates = one("llama", "east", "discovered-pool", AdmissionState::NewAndExisting);
+        candidates[0].expires_at = Some(OffsetDateTime::now_utc().saturating_add(time::Duration::seconds(600)));
+        let snapshot = RouteSnapshot::from_static(candidates.clone(), Arc::from("east"));
+        assert_eq!(
+            route_decision(&snapshot, true),
+            RouteDecision::Select,
+            "dynamic routes require deadline-aware selection even after another filter chose a cluster"
+        );
+        assert_eq!(
+            front(candidates, CapabilityKind::InferenceModel, "llama").as_deref(),
+            Some("discovered-pool"),
+            "unexpired inventory remains routable"
+        );
     }
 
     #[test]

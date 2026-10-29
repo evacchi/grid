@@ -174,6 +174,7 @@ fn wire_plaintext<'data>(key: &KeyState, data: &'data [u8]) -> Result<std::borro
         KeyState::Key(key) => swim::crypto::decrypt(key, data)
             .map(std::borrow::Cow::Owned)
             .map_err(|_e| Rejected::Unauthenticated),
+        KeyState::Plain if data.starts_with(&swim::crypto::MAGIC) => Err(Rejected::EncryptedWithoutKey),
         KeyState::Plain => Ok(std::borrow::Cow::Borrowed(data)),
         KeyState::Pending => Err(Rejected::Pending),
     }
@@ -237,6 +238,36 @@ impl UnauthenticatedDrops {
     }
 }
 
+/// Encrypted packets received without a configured key, warned at most once per window.
+#[derive(Default)]
+struct EncryptedWithoutKeyDrops {
+    /// When the last warning was logged.
+    warned_at: Option<Instant>,
+    /// Drops since that warning.
+    suppressed: u64,
+}
+
+/// Least time between warnings about encrypted packets received without a key.
+const ENCRYPTED_WITHOUT_KEY_WARN_EVERY: Duration = Duration::from_secs(60);
+
+impl EncryptedWithoutKeyDrops {
+    /// Count one dropped packet, returning whether it was warned.
+    fn dropped(&mut self, from: SocketAddr, bytes: usize, now: Instant) -> bool {
+        let quiet = self
+            .warned_at
+            .is_some_and(|at| now.saturating_duration_since(at) < ENCRYPTED_WITHOUT_KEY_WARN_EVERY);
+        if quiet {
+            self.suppressed = self.suppressed.saturating_add(1);
+            tracing::debug!(addr = %from, bytes, "SWIM: dropping encrypted packet while no key is configured; peers may disagree on encryption");
+            return false;
+        }
+        let suppressed = std::mem::take(&mut self.suppressed);
+        self.warned_at = Some(now);
+        tracing::warn!(addr = %from, bytes, suppressed, "SWIM: dropping encrypted packet while no key is configured; peers may disagree on encryption");
+        true
+    }
+}
+
 /// Why an inbound packet was dropped.
 #[derive(Debug, PartialEq, Eq)]
 enum Rejected {
@@ -244,6 +275,8 @@ enum Rejected {
     Pending,
     /// The packet did not authenticate under the key.
     Unauthenticated,
+    /// The packet is encrypted but this node has no configured key.
+    EncryptedWithoutKey,
 }
 
 impl std::fmt::Debug for SwimConfig {
@@ -1082,6 +1115,18 @@ impl SwimHandle {
         )
     }
 
+    /// Detached handle with a caller-selected inventory queue capacity.
+    #[cfg(test)]
+    pub(crate) fn detached_with_inventory_capacity(
+        site_name: &str,
+        capacity: usize,
+    ) -> (Self, mpsc::Receiver<swim::ModelInventoryBroadcast>) {
+        let (mut handle, _runtime) = Self::detached(site_name);
+        let (inventory_broadcast_tx, inventory_broadcast_rx) = mpsc::channel(capacity);
+        handle.inventory_broadcast_tx = inventory_broadcast_tx;
+        (handle, inventory_broadcast_rx)
+    }
+
     /// Immutable publisher epoch and the persisted generation high-water mark.
     pub(crate) fn publisher_reservation(&self) -> (u64, u64) {
         self.publisher_reservation
@@ -1327,18 +1372,16 @@ impl SwimHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`BroadcastError::ChannelFull`] when the queue is full, or
+    /// Waits for bounded queue capacity, or returns
     /// [`BroadcastError::ChannelClosed`] after the runtime exits.
-    pub fn publish_model_inventory_frame(
+    pub async fn publish_model_inventory_frame(
         &self,
         broadcast: swim::ModelInventoryBroadcast,
     ) -> Result<(), BroadcastError> {
         self.inventory_broadcast_tx
-            .try_send(broadcast)
-            .map_err(|error| match error {
-                TrySendError::Full(_) => BroadcastError::ChannelFull,
-                TrySendError::Closed(_) => BroadcastError::ChannelClosed,
-            })
+            .send(broadcast)
+            .await
+            .map_err(|_error| BroadcastError::ChannelClosed)
     }
 
     /// Withdraw all anti-entropy state for the given `GridNetwork` scope.
@@ -1703,6 +1746,7 @@ async fn run_loop(
     let mut age_tick = tokio::time::interval(Duration::from_secs(1));
     let mut pending_drops = PendingDrops::default();
     let mut unauthenticated_drops = UnauthenticatedDrops::default();
+    let mut encrypted_without_key_drops = EncryptedWithoutKeyDrops::default();
     let own = [Some(advertise_addr), socket.local_addr().ok()];
     let mut seed_addrs = foreign_seeds(config.seeds.clone(), &own);
     let mut next_seed_announce_at = Instant::now() + Duration::from_secs(5);
@@ -1770,6 +1814,10 @@ async fn run_loop(
                             },
                             Err(Rejected::Unauthenticated) => {
                                 unauthenticated_drops.dropped(from, n, Instant::now());
+                                continue;
+                            },
+                            Err(Rejected::EncryptedWithoutKey) => {
+                                encrypted_without_key_drops.dropped(from, n, Instant::now());
                                 continue;
                             },
                         };
@@ -2676,6 +2724,11 @@ mod tests {
             Err(Rejected::Unauthenticated)
         );
         assert_eq!(
+            wire_plaintext(&KeyState::Plain, &sealed).map(|_| ()),
+            Err(Rejected::EncryptedWithoutKey),
+            "a plaintext peer must reject encrypted frames before Foca decodes them"
+        );
+        assert_eq!(
             wire_plaintext(&KeyState::Plain, b"ping").expect("plain").as_ref(),
             b"ping"
         );
@@ -3158,6 +3211,21 @@ mod tests {
         assert_eq!(drops.suppressed, 0, "the count resets on a warning");
     }
 
+    #[test]
+    fn encrypted_without_key_drops_warn_once_per_window() {
+        let t0 = now();
+        let from = SocketAddr::from(([10, 0, 0, 1], 7946));
+        let mut drops = EncryptedWithoutKeyDrops::default();
+        assert!(drops.dropped(from, 90, t0), "first mismatch warns");
+        assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(1)), "then quiet");
+        assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(59)));
+        assert!(
+            drops.dropped(from, 90, t0 + ENCRYPTED_WITHOUT_KEY_WARN_EVERY),
+            "warns again"
+        );
+        assert_eq!(drops.suppressed, 0, "the count resets on a warning");
+    }
+
     // -----------------------------------------------------------------------
     // SWIM age tracking with synthetic instants
     // -----------------------------------------------------------------------
@@ -3468,7 +3536,6 @@ mod tests {
     #[test]
     fn set_gateway_address_sends_to_channel() {
         let (_snapshot_tx, snapshot_rx) = watch::channel(MembershipSnapshot::default());
-        let (_state_tx, state_rx) = watch::channel(GridStateSnapshot::new("test".to_owned()));
         let (broadcast_tx, _broadcast_rx) = mpsc::channel(1);
         let (seed_tx, _seed_rx) = mpsc::channel(16);
         let (key_tx, _key_rx) = watch::channel(KeyState::Plain);
@@ -3479,7 +3546,7 @@ mod tests {
             advertise_addr: "127.0.0.1:7946".parse().unwrap_or_else(|_| std::process::abort()),
             signals_address: None,
             snapshot_rx,
-            state_rx,
+            state_rx: watch::channel(GridStateSnapshot::new("test".to_owned())).1,
             model_inventories_rx: watch::channel(Vec::new()).1,
             broadcast_tx,
             trust_update_tx: mpsc::unbounded_channel().0,
@@ -3887,7 +3954,6 @@ mod tests {
     #[test]
     fn announce_seeds_returns_closed_when_receiver_dropped() {
         let (_snapshot_tx, snapshot_rx) = watch::channel(MembershipSnapshot::default());
-        let (_state_tx, state_rx) = watch::channel(GridStateSnapshot::new("test".to_owned()));
         let (broadcast_tx, _broadcast_rx) = mpsc::channel(1);
         let (seed_tx, seed_rx) = mpsc::channel::<Vec<SocketAddr>>(16);
         let (key_tx, _key_rx) = watch::channel(KeyState::Plain);
@@ -3898,7 +3964,7 @@ mod tests {
             advertise_addr: "127.0.0.1:7946".parse().unwrap_or_else(|_| std::process::abort()),
             signals_address: None,
             snapshot_rx,
-            state_rx,
+            state_rx: watch::channel(GridStateSnapshot::new("test".to_owned())).1,
             model_inventories_rx: watch::channel(Vec::new()).1,
             broadcast_tx,
             trust_update_tx: mpsc::unbounded_channel().0,
