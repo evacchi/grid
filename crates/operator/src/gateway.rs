@@ -210,6 +210,8 @@ impl Discovery {
 }
 
 /// Publish a discovery result to controllers and any active SWIM runtime.
+///
+/// Publishing `None` withdraws an address that was previously advertised.
 fn publish_address(
     resolved_address: &tokio::sync::watch::Sender<Option<String>>,
     swim: &tokio::sync::watch::Receiver<Option<Arc<SwimHandle>>>,
@@ -223,11 +225,11 @@ fn publish_address(
             true
         }
     });
-    if let Some(address) = address
-        && let Some(handle) = swim.borrow().as_ref()
-        && let Err(error) = handle.set_gateway_address(Some(address.to_owned()))
-    {
-        tracing::warn!(%error, "failed to update gateway address on SWIM handle");
+    if let Some(handle) = swim.borrow().as_ref() {
+        let address = address.map(str::to_owned);
+        if let Err(error) = handle.set_gateway_address(address) {
+            tracing::warn!(%error, "failed to update gateway address on SWIM handle");
+        }
     }
 }
 
@@ -411,6 +413,23 @@ mod tests {
             handle.gateway_address().as_deref(),
             Some("gateway.test:8080"),
             "a later poll applies the address to the newly available SWIM handle"
+        );
+    }
+
+    #[test]
+    fn publishing_address_loss_withdraws_it_from_swim() {
+        let (resolved_address, _address_rx) = tokio::sync::watch::channel(None);
+        let (handle, _gateway_rx) = crate::swim_runtime::test_handle();
+        let handle = Arc::new(handle);
+        assert!(handle.set_gateway_address(Some("gateway.test:8080".to_owned())).is_ok());
+        let (_swim_tx, swim_rx) = tokio::sync::watch::channel(Some(Arc::clone(&handle)));
+
+        publish_address(&resolved_address, &swim_rx, None);
+
+        assert_eq!(
+            handle.gateway_address(),
+            None,
+            "address loss must clear the address held by SWIM"
         );
     }
 
