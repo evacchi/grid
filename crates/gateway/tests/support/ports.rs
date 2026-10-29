@@ -22,3 +22,8 @@ pub(crate) fn free_port() -> u16 {
         }
     }
 }
+
+/// Returns an already-bound ephemeral loopback listener for a test server.
+pub(crate) fn bound_listener() -> TcpListener {
+    TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| std::process::abort())
+}

@@ -19,7 +19,7 @@ mod ports;
 mod tests {
     use std::{
         io::{BufRead as _, BufReader, Read as _, Write as _},
-        net::{TcpListener, TcpStream},
+        net::TcpStream,
         path::PathBuf,
         process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
@@ -27,7 +27,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::ports::free_port;
+    use super::ports::{bound_listener, free_port};
 
     /// How long the gateway may take to start listening.
     const DEADLINE: Duration = Duration::from_secs(20);
@@ -37,7 +37,7 @@ mod tests {
 
     /// A Responses API backend that stores nothing and names every response `resp_abc`.
     fn backend() -> (u16, Seen) {
-        let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind backend");
+        let listener = bound_listener();
         let port = listener.local_addr().expect("addr").port();
         let seen: Seen = Arc::default();
         let recorded = Arc::clone(&seen);

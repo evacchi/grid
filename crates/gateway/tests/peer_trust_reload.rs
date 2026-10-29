@@ -16,7 +16,7 @@ mod ports;
 mod tests {
     use std::{
         io::{BufRead as _, BufReader, Read as _, Write as _},
-        net::{TcpListener, TcpStream},
+        net::TcpStream,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{Arc, Mutex},
@@ -30,7 +30,7 @@ mod tests {
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject as _},
     };
 
-    use super::ports::free_port;
+    use super::ports::{bound_listener, free_port};
 
     /// How long one expected change may take.
     const DEADLINE: Duration = Duration::from_secs(20);
@@ -46,7 +46,7 @@ mod tests {
 
     /// A plaintext backend that answers every request on a connection it keeps open.
     fn keepalive_backend() -> String {
-        let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind backend");
+        let listener = bound_listener();
         let addr = listener.local_addr().expect("backend addr").to_string();
         thread::spawn(move || {
             for stream in listener.incoming() {

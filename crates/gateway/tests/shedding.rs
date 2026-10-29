@@ -29,7 +29,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         io::{BufRead as _, BufReader, Read as _, Write as _},
-        net::{TcpListener, TcpStream},
+        net::TcpStream,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{
@@ -46,7 +46,10 @@ mod tests {
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     };
 
-    use super::{http::read_request, ports::free_port};
+    use super::{
+        http::read_request,
+        ports::{bound_listener, free_port},
+    };
 
     /// How often the gateway polls each peer.
     const POLL: Duration = Duration::from_millis(200);
@@ -101,7 +104,7 @@ mod tests {
                     .with_single_cert(chain, key)
                     .expect("server config"),
             );
-            let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind peer");
+            let listener = bound_listener();
             let addr = listener.local_addr().expect("peer addr").to_string();
             let mode = Arc::new(AtomicU8::new(TEACH));
             let stop = Arc::new(AtomicBool::new(false));
@@ -170,7 +173,7 @@ mod tests {
 
     /// A plain HTTP backend answering 200 with its site name.
     fn backend(site: &'static str) -> u16 {
-        let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind backend");
+        let listener = bound_listener();
         let port = listener.local_addr().expect("backend addr").port();
         thread::spawn(move || {
             for stream in listener.incoming() {

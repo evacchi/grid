@@ -19,7 +19,7 @@ mod ports;
 mod tests {
     use std::{
         io::{BufRead as _, BufReader, Read as _, Write as _},
-        net::{TcpListener, TcpStream},
+        net::TcpStream,
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{
@@ -36,7 +36,10 @@ mod tests {
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     };
 
-    use super::{http::read_request, ports::free_port};
+    use super::{
+        http::read_request,
+        ports::{bound_listener, free_port},
+    };
 
     /// How long any one expected change may take: the watch re-reads every 5s.
     const DEADLINE: Duration = Duration::from_secs(20);
@@ -116,7 +119,7 @@ mod tests {
                     .with_single_cert(chain, key)
                     .expect("server config"),
             );
-            let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind peer");
+            let listener = bound_listener();
             let addr = listener.local_addr().expect("peer addr").to_string();
             let seen = Arc::new(Mutex::new(Vec::new()));
             let hop_requests = Arc::new(AtomicUsize::new(0));
@@ -525,7 +528,7 @@ mod tests {
 
     impl Plain {
         fn start() -> Self {
-            let listener = TcpListener::bind(("127.0.0.1", free_port())).expect("bind plaintext");
+            let listener = bound_listener();
             let addr = listener.local_addr().expect("plaintext addr").to_string();
             let (requests, hops) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
             let (counted, hopped) = (Arc::clone(&requests), Arc::clone(&hops));
