@@ -230,10 +230,10 @@ fn publish_address(
             true
         }
     });
-    if let Some(handle) = swim.borrow().as_ref() {
-        if let Err(error) = handle.set_gateway_address(Some(address.to_owned())) {
-            tracing::warn!(%error, "failed to update gateway address on SWIM handle");
-        }
+    if let Some(handle) = swim.borrow().as_ref()
+        && let Err(error) = handle.set_gateway_address(Some(address.to_owned()))
+    {
+        tracing::warn!(%error, "failed to update gateway address on SWIM handle");
     }
 }
 
