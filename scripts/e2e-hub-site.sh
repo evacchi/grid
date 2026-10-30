@@ -2984,6 +2984,29 @@ assert_rotation_declared() {
   done
 }
 
+# Pin trust keeps the enrolled identity until it expires: no operator renewal log or
+# previous.crt in the Secret means neither site rotated its identity during this leg.
+assert_pin_no_renewal() {
+  [[ $TRUST == pin ]] || return 0
+  local ctx name logged previous
+  for ctx in "$HUB_CTX" "$SITE_CTX"; do
+    name=hub
+    [[ $ctx == "$HUB_CTX" ]] || name=$SITE
+    logged=$(renewals_logged "$ctx")
+    if [[ $logged == 0 ]]; then
+      pass "$name identity was not renewed under pin trust"
+    else
+      fail "$name operator logged $logged identity renewals under pin trust"
+    fi
+    previous=$(k "$ctx" get secret grid-site-identity -o jsonpath='{.data.previous\.crt}')
+    if [[ -z $previous ]]; then
+      pass "$name identity Secret has no previous certificate under pin trust"
+    else
+      fail "$name identity Secret has a previous certificate under pin trust"
+    fi
+  done
+}
+
 cmd_test() {
   local m tool
   for m in $MODES; do
