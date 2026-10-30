@@ -1130,14 +1130,32 @@ async fn publish_discovered_model_inventories(ctx: &OperatorCtx, client: &Client
             && let Some(signing_key) = Box::pin(load_gossip_signing_identity(network, client, swim.site_name())).await
         {
             for inventory in inventories {
-                if let Err(error) = publish_model_inventory_frames(swim, &inventory, signing_key.as_slice()).await {
-                    tracing::warn!(provider = %inventory.provider_id, %error, "local model inventory publication failed");
+                match timeout(
+                    INVENTORY_PUBLISH_TIMEOUT,
+                    publish_model_inventory_frames(swim, &inventory, signing_key.as_slice()),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        tracing::warn!(provider = %inventory.provider_id, %error, "local model inventory publication failed");
+                    },
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            provider = %inventory.provider_id,
+                            timeout_secs = INVENTORY_PUBLISH_TIMEOUT.as_secs(),
+                            "local model inventory publication timed out"
+                        );
+                    },
                 }
             }
         }
     }
     Ok(())
 }
+
+/// Bound how long one discovery round waits for SWIM queue capacity per inventory.
+const INVENTORY_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Queue every signed frame of one inventory, waiting for bounded queue capacity.
 async fn publish_model_inventory_frames(

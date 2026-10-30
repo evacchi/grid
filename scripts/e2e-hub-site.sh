@@ -1462,13 +1462,25 @@ assert_model_gossip() {
     restore_hub_operator || true
     return
   }
-  capture_model_gossip_state retained-after-stop || return
+  capture_model_gossip_state retained-after-stop || { restore_hub_operator || true; return; }
   local retained_config="$dir/retained-after-stop-routing-config.json"
-  cp "$retained_config" "$WORK/retained-routing-config.json"
+  cp "$retained_config" "$WORK/retained-routing-config.json" || {
+    fail "copy retained hub routing configuration"
+    restore_hub_operator || true
+    return
+  }
   old_expiry=$(jq -er --arg model "$MODEL" --arg site "$SITE" \
     '.candidates[] | select(.kind == "inference_model" and .name == $model and .site == $site and .cluster == "vcr") | .expires_at' \
-    "$retained_config") || { fail "read retained hub candidate expiry"; return; }
-  old_epoch=$(date -d "$old_expiry" +%s) || { fail "parse retained candidate expiry"; return; }
+    "$retained_config") || {
+    fail "read retained hub candidate expiry"
+    restore_hub_operator || true
+    return
+  }
+  old_epoch=$(date -d "$old_expiry" +%s) || {
+    fail "parse retained candidate expiry"
+    restore_hub_operator || true
+    return
+  }
   discovered_model_served || fail "retained gateway route should serve before the expiry safety boundary"
   margin_epoch=$((old_epoch - 30))
   GATEWAY_SAFETY_EPOCH=$margin_epoch
