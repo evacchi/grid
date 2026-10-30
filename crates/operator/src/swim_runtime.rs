@@ -2069,11 +2069,7 @@ async fn run_loop(
             Ok(()) = gateway_loop_rx.changed() => {
                 let previous = gateway_address.clone();
                 gateway_address.clone_from(&gateway_loop_rx.borrow_and_update());
-                let withdrawn = gateway_address.is_none() && previous.is_some();
-                let broadcast_address = gateway_address
-                    .as_deref()
-                    .or_else(|| withdrawn.then_some(""));
-                if let Some(addr) = broadcast_address {
+                if let Some(addr) = gateway_address.as_deref() {
                     let Some(revision) = revisions.take() else {
                         tracing::warn!("SWIM revisions exhausted; the address change waits for renewal");
                         continue;
@@ -2099,9 +2095,7 @@ async fn run_loop(
                     )
                     .await;
                     publish_state(&state_tx, &node);
-                    if withdrawn {
-                        tracing::info!("gateway address withdrawn at runtime");
-                    } else if previous.as_deref() == Some(addr) {
+                    if previous.as_deref() == Some(addr) {
                         // Discovery re-announces an unchanged address for late joiners; only a change is news.
                         tracing::debug!(addr = %addr, "gateway address re-announced");
                     } else {

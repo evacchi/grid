@@ -803,8 +803,7 @@ A discovered SWIM peer is not automatically authorized for routing.
 | `SWIMDiscovered` | Discovered | Peer observed as Alive in SWIM membership; gateway address propagating |
 | `GatewayAddressKnown` | Connecting | Gateway address received; advancing to Connecting |
 | `EndpointsDeclared` | Connecting | Declared site names a dialable gateway endpoint, which also gives its signals endpoint; advancing without discovery |
-| `GatewayAddressMissing` | Discovered, Connecting, or Unreachable | No gateway address known (see `GRID_GATEWAY_ADDRESS`), or a previously probed site lost it |
-| `GatewayAddressUndeclared` | Pending, Discovered, Connecting, or Unreachable | This operator's own site has neither a usable declared endpoint nor a configured or discovered address. Applies under both Swim and Local membership; emitted as a `Warning` event. Set `gateway.address` or declare the endpoint. |
+| `GatewayAddressMissing` | Pending, Discovered, Connecting, or Unreachable | No usable gateway address is known: the own site's endpoint and configured address are absent, or a peer has not announced an address |
 | `TlsVerified` | Active | TLS handshake succeeded; certificate chain, identity, and configured pin verified |
 | `IdentityVerificationRequired` | Connecting | TCP endpoint is reachable, but plaintext cannot establish the gateway identity |
 | `PlaintextUnreachable` | Connecting or Unreachable | TCP probe failed (explicit Plaintext mode) |
@@ -938,7 +937,7 @@ SWIM peers - the `Pending -> Discovered` transition above requires a remote peer
 observed Alive. A single or combined cluster has no peers, so its own `GridSite`
 stays `Pending` with reason `AwaitingDiscovery` when a usable gateway address is
 available. If its endpoint is undeclared and gateway discovery has no address,
-reconciliation uses `GatewayAddressUndeclared` under both Swim and Local
+reconciliation uses `GatewayAddressMissing` under both Swim and Local
 membership; this reason is emitted as a `Warning` event. **Either reason is
 expected and does not block local serving:** local `InferenceProvider`s are
 eligible regardless of `GridSite.status.phase`; only *remote* CRDT provider

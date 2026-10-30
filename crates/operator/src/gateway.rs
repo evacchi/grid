@@ -211,23 +211,27 @@ impl Discovery {
 
 /// Publish a discovery result to controllers and any active SWIM runtime.
 ///
-/// Publishing `None` withdraws an address that was previously advertised.
+/// Missing discovery results preserve the last published address. This avoids
+/// flapping during Service recreation and keeps the wire format compatible
+/// with peers that treat an empty address as a value.
 fn publish_address(
     resolved_address: &tokio::sync::watch::Sender<Option<String>>,
     swim: &tokio::sync::watch::Receiver<Option<Arc<SwimHandle>>>,
     address: Option<&str>,
 ) {
+    let Some(address) = address else {
+        return;
+    };
     resolved_address.send_if_modified(|current| {
-        if current.as_deref() == address {
+        if current.as_deref() == Some(address) {
             false
         } else {
-            *current = address.map(str::to_owned);
+            *current = Some(address.to_owned());
             true
         }
     });
     if let Some(handle) = swim.borrow().as_ref() {
-        let address = address.map(str::to_owned);
-        if let Err(error) = handle.set_gateway_address(address) {
+        if let Err(error) = handle.set_gateway_address(Some(address.to_owned())) {
             tracing::warn!(%error, "failed to update gateway address on SWIM handle");
         }
     }
@@ -418,21 +422,27 @@ mod tests {
         );
     }
 
-    /// Checks that a lost address clears the value held by the SWIM handle.
+    /// Checks that a missing lookup preserves the last address held by SWIM and controllers.
     #[test]
-    fn publishing_address_loss_withdraws_it_from_swim() {
+    fn publishing_a_missing_lookup_preserves_the_last_address() {
         let (resolved_address, _address_rx) = tokio::sync::watch::channel(None);
         let (handle, _gateway_rx) = crate::swim_runtime::test_handle();
         let handle = Arc::new(handle);
         assert!(handle.set_gateway_address(Some("gateway.test:8080".to_owned())).is_ok());
         let (_swim_tx, swim_rx) = tokio::sync::watch::channel(Some(Arc::clone(&handle)));
 
+        publish_address(&resolved_address, &swim_rx, Some("gateway.test:8080"));
         publish_address(&resolved_address, &swim_rx, None);
 
         assert_eq!(
-            handle.gateway_address(),
-            None,
-            "address loss must clear the address held by SWIM"
+            handle.gateway_address().as_deref(),
+            Some("gateway.test:8080"),
+            "an absent Service lookup must not withdraw the address from SWIM"
+        );
+        assert_eq!(
+            resolved_address.borrow().as_deref(),
+            Some("gateway.test:8080"),
+            "an absent Service lookup must not withdraw the address from controllers"
         );
     }
 

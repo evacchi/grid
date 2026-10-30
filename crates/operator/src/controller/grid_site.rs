@@ -252,7 +252,7 @@ fn site_phase_for_gateway(
     if gateway_source == GatewayAddressSource::Undeclared && phase != GridSitePhase::Left {
         return (
             phase,
-            "GatewayAddressUndeclared".to_owned(),
+            "GatewayAddressMissing".to_owned(),
             "this site's gateway address is not declared or discoverable; set gateway.address in the operator configuration"
                 .to_owned(),
         );
@@ -1037,7 +1037,6 @@ mod tests {
             ("PlaintextUnreachable", ("False", "Unreachable", None)),
             ("HandshakeTimeout", ("False", "TLSProtocolError", None)),
             ("GatewayAddressMissing", ("False", "AddressMissing", None)),
-            ("GatewayAddressUndeclared", ("False", "GatewayAddressUndeclared", None)),
             ("GossipedAddressRefused", ("False", "AddressRefused", None)),
             ("UntrustedIssuer", ("False", "UntrustedIssuer", None)),
         ];
@@ -1173,7 +1172,7 @@ mod tests {
 
     /// Checks the missing-address reason for an own site with no declared endpoint.
     #[test]
-    fn pending_declared_without_a_gateway_reports_undeclared() {
+    fn pending_declared_without_a_gateway_reports_missing() {
         let mut site = declared_at("peer.example.com:443");
         site.spec.gateway_endpoint = None;
         let (site, source) = apply_local_gateway_address(&site, Some("test-site"), None);
@@ -1185,7 +1184,7 @@ mod tests {
             source,
         );
         assert_eq!(next, GridSitePhase::Pending, "no gateway, no endpoints");
-        assert_eq!(reason, "GatewayAddressUndeclared");
+        assert_eq!(reason, "GatewayAddressMissing");
         assert!(
             message.contains("gateway.address"),
             "message names the configuration setting"

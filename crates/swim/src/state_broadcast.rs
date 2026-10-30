@@ -120,8 +120,7 @@ pub struct StateBroadcast {
     /// Data-plane gateway address advertised by this site.
     ///
     /// Carried as optional trailing extension data. `None` when the originating
-    /// operator has no configured gateway address. An empty string is reserved
-    /// as a withdrawal marker for a previously advertised address.
+    /// operator has no configured gateway address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_address: Option<String>,
 
@@ -1691,18 +1690,10 @@ impl StateBroadcastHandler {
             return false;
         }
         revisions.insert(origin.clone(), broadcast.revision);
-        let withdraw_gateway = matches!(lane, Lane::Gateway) && value.is_empty();
-        if withdraw_gateway {
-            values.remove(origin);
-        } else {
-            values.insert(origin.clone(), value.clone());
-        }
+        values.insert(origin.clone(), value.clone());
         drop(retained);
         // Republishing an unchanged value must not wake every reader.
         self.lane_tx(lane).send_if_modified(|map| {
-            if withdraw_gateway {
-                return map.remove(origin).is_some();
-            }
             if map.get(origin) == Some(value) {
                 return false;
             }
@@ -4591,32 +4582,6 @@ mod tests {
             handler.gateway_address_for_site("site-p").as_deref(),
             Some("10.0.0.2:19080"),
             "gateway address must be stored"
-        );
-    }
-
-    /// Checks that a newer empty gateway marker removes the retained address.
-    #[test]
-    fn handler_withdraws_gateway_address_from_empty_marker() {
-        let mut handler = StateBroadcastHandler::new("site-local".to_owned());
-        let address = StateBroadcast::new(
-            "site-p".to_owned(),
-            1,
-            snapshot("site-p", 1, 0.4),
-            Some("10.0.0.2:19080".to_owned()),
-        );
-        let withdrawal = StateBroadcast::new("site-p".to_owned(), 2, snapshot("site-p", 2, 0.4), Some(String::new()));
-        for broadcast in [address, withdrawal] {
-            let bytes = broadcast.encode().unwrap_or_else(|_| std::process::abort());
-            let key = handler
-                .receive_item(&bytes, None)
-                .unwrap_or_else(|_| std::process::abort());
-            assert!(key.is_some(), "gateway update must be accepted");
-        }
-
-        assert_eq!(
-            handler.gateway_address_for_site("site-p"),
-            None,
-            "a newer empty gateway marker withdraws the previous address"
         );
     }
 

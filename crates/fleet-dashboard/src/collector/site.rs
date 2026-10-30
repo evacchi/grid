@@ -397,12 +397,8 @@ mod tests {
         let base = FakePrometheus::new().hang().serve().await;
         let registry = Metrics::new().unwrap();
         let short = Duration::from_millis(100);
-        let source_timeout = Duration::from_secs(2);
         install_provider();
-        let source = Source::PerSite(PerSiteSource::new(
-            secrets(&[("site-spoke1", TOKEN, &[])]),
-            source_timeout,
-        ));
+        let source = Source::PerSite(PerSiteSource::new(secrets(&[("site-spoke1", TOKEN, &[])]), TIMEOUT));
         let poller = SitePoller {
             source: &source,
             queries: &queries,

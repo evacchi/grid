@@ -1189,7 +1189,7 @@ separate steps.
 
 **The own GridSite has no gateway address**
 
-- Reason will be `GatewayAddressUndeclared`. Set `gateway.address` in the
+- Reason will be `GatewayAddressMissing`. Set `gateway.address` in the
   operator configuration, or declare `spec.gatewayEndpoint.address` on the
   own `GridSite`.
 
