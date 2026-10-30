@@ -1424,6 +1424,37 @@ impl SwimHandle {
     }
 }
 
+/// Create a test handle with a live gateway-address receiver.
+#[cfg(test)]
+pub(crate) fn test_handle() -> (SwimHandle, watch::Receiver<Option<String>>) {
+    let (snapshot_tx, snapshot_rx) = watch::channel(MembershipSnapshot::default());
+    let (state_tx, state_rx) = watch::channel(GridStateSnapshot::new("test".to_owned()));
+    let (broadcast_tx, _broadcast_rx) = mpsc::channel(1);
+    let (seed_tx, _seed_rx) = mpsc::channel(16);
+    let (key_tx, _key_rx) = watch::channel(KeyState::Plain);
+    let (gateway_tx, gateway_rx) = watch::channel(None);
+    let handle = SwimHandle {
+        publisher_reservation: (1, 2),
+        site_name: "test".to_owned(),
+        advertise_addr: "127.0.0.1:7946".parse().unwrap_or_else(|_| std::process::abort()),
+        signals_address: None,
+        snapshot_rx,
+        state_rx,
+        model_inventories_rx: watch::channel(Vec::new()).1,
+        broadcast_tx,
+        seed_tx,
+        key_tx,
+        trust_update_tx: mpsc::unbounded_channel().0,
+        inventory_broadcast_tx: mpsc::channel(1).0,
+        gateway_tx,
+        runtime_tx: watch::channel(true).0,
+        withdraw_tx: mpsc::channel(16).0,
+        leave_tx: mpsc::channel(1).0,
+    };
+    drop((snapshot_tx, state_tx));
+    (handle, gateway_rx)
+}
+
 /// Stable SWIM data that can change rendered Grid resources.
 #[derive(Debug, PartialEq)]
 struct ReconciliationView {
@@ -2064,8 +2095,8 @@ async fn run_loop(
                     )
                     .await;
                     publish_state(&state_tx, &node);
-                    // Discovery re-announces an unchanged address for late joiners; only a change is news.
                     if previous.as_deref() == Some(addr) {
+                        // Discovery re-announces an unchanged address for late joiners; only a change is news.
                         tracing::debug!(addr = %addr, "gateway address re-announced");
                     } else {
                         tracing::info!(addr = %addr, "gateway address updated at runtime");

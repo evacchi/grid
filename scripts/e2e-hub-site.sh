@@ -152,10 +152,13 @@ cmd_up() {
   fi
   resolve_forge
   CREATED=1
+  # `up` creates the cross-cluster network as well as the configured Kind clusters.
+  # Stacks remain separate so the amd64 VCR image can be loaded before the site stack applies.
   # Word splitting is the point: the prefix is a command and its flags.
   # shellcheck disable=SC2086
   ${KIND_CREATE_PREFIX:-} "$FORGE_BIN" --config "$TOPO/forge.yaml" --state-dir "$FORGE_STATE" \
-    --non-interactive up
+    --non-interactive up || die "create the environment network and clusters"
+  preload_model
   for c in hub site; do
     for img in operator gateway enrollment; do
       forge cluster load-image "$c" "$(image "$img")"
@@ -163,6 +166,18 @@ cmd_up() {
     forge apply "$c"
   done
   feedback_contract_test
+}
+
+# preload_model: the upstream VCR image is amd64-only. Pull and load that image on non-amd64
+# hosts before Forge applies the model workload; all other images keep their native platform.
+preload_model() {
+  local img
+  [[ $(uname -m) != x86_64 ]] || return 0
+  img=$(sed -n 's/^ *vcrImage: "\(.*\)"$/\1/p' "$TOPO/forge.yaml")
+  [[ -n $img ]] || die "no vcrImage in $TOPO/forge.yaml"
+  log "pulling amd64 model backend image $img"
+  "$CONTAINER_TOOL" pull --platform=linux/amd64 "$img" || die "pull amd64 model backend image"
+  forge cluster load-image site "$img" || die "load amd64 model backend image into site cluster"
 }
 
 # The CI-only test owns exactly one object and the CRD it installs on the empty hub.
@@ -280,6 +295,9 @@ renewal_args() {
   fi
   ! local_source || RA+=(--set grid.membership.source=Local)
   ! local_source || [[ $1 != grid-operator ]] || RA+=(--set signals.service.type=LoadBalancer)
+  ! local_source || [[ $1 != grid-operator ]] || RA+=(
+    --set gateway.serviceName=grid-gateway-internal
+    --set "gateway.address=grid-gateway-internal.$NS.svc:8080")
   polls || return 0
   case $1 in
     # grid.signals starts the operator in poll before its GridNetwork exists; without grid.id
@@ -380,6 +398,34 @@ network_condition() {
 # site_reports_enrolled <context>: the signer issued this site's identity, so a Secret some
 # other writer left cannot pass as enrolled.
 site_reports_enrolled() { [[ $(network_condition "$1" Enrolled) == True/Enrolled ]]; }
+
+own_site_connected() { [[ $(k "$1" get gridsite "$2" \
+  -o jsonpath='{.status.conditions[?(@.type=="Connected")].status}/{.status.conditions[?(@.type=="Connected")].reason}') == True/Connected ]]; }
+
+own_site_gateway_not_in_spec() {
+  local address
+  address=$(k "$1" get gridsite "$2" -o jsonpath='{.spec.gatewayEndpoint.address}') || return 1
+  [[ -z $address ]]
+}
+
+cluster_ip_gateway() {
+  kubectl --context "$1" -n "$NS" apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: grid-gateway-internal
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: praxis-gateway
+    app.kubernetes.io/instance: grid-gateway
+EOF
+}
 
 # snapshot_logs <context> <label>: every container, init and hook pods included.
 # Returns nonzero when any listing or log fetch fails.
@@ -523,6 +569,7 @@ install_hub() {
       --set "praxisConfig.render.backends.$SITE.endpoint=$SITE_GW_IP:8080" "${IMG[@]}" \
       "${hub_gateway_args[@]}" "${GA[@]}" || die "install hub grid-gateway"
   fi
+  ! local_source || cluster_ip_gateway "$HUB_CTX" || die "create hub ClusterIP gateway Service"
   eventually "hub operator enrolled from its own invite through the in-cluster Service" enrolled "$HUB_CTX" \
     || die "hub not enrolled"
   eventually "hub GridNetwork reports Enrolled by the signer" site_reports_enrolled "$HUB_CTX" \
@@ -614,6 +661,7 @@ install_site() {
     --set "grid.siteName=$SITE" --set gridIdentity.tlsSecretName=grid-site-identity --set gridIdentity.caSecretName=grid-ca "${trust[@]}" \
     --set "praxisConfig.render.backends.local.endpoint=$MODEL_IP:8000" \
     "${IMG[@]}" --set service.loadBalancerIP="$SITE_GW_IP" "${gw_shared[@]}" || die "install site grid-gateway"
+  ! local_source || cluster_ip_gateway "$SITE_CTX" || die "create site ClusterIP gateway Service"
   eventually "site operator enrolled from its copied invite through the hub enrollment URL" enrolled "$SITE_CTX" \
     || die "site not enrolled"
   eventually "$SITE GridNetwork reports Enrolled by the signer" site_reports_enrolled "$SITE_CTX" \
@@ -699,6 +747,13 @@ assert_membership() {
         pass "$ctx runs no SWIM Service under Local membership"
       fi
     done
+    for ctx in "$HUB_CTX" "$SITE_CTX"; do
+      name=hub
+      [[ $ctx == "$HUB_CTX" ]] || name=$SITE
+      eventually "$name own GridSite has no spec gatewayEndpoint" own_site_gateway_not_in_spec "$ctx" "$name" || true
+    done
+    eventually "$SITE own GridSite reaches Connected through its ClusterIP gateway override" \
+      own_site_connected "$SITE_CTX" "$SITE" || true
   else
     if [[ $SIGNED_STATE == enforce ]]; then
       eventually "site GridSite grid-hub Active over SWIM" site_phase_in "$SITE_CTX" grid-hub Active || true
@@ -926,7 +981,7 @@ assert_site_route() {
 }
 
 assert_health() {
-  local ctx restarts dir hits warns
+  local ctx restarts dir hits warns self_probe_ip
   for ctx in "$HUB_CTX" "$SITE_CTX"; do
     restarts=$(kubectl --context "$ctx" get pods -A -o json | jq -r --arg a "$NS" --arg b "$ENS" '.items[]
       | select(.metadata.namespace == $a or .metadata.namespace == $b) | .metadata.name as $p
@@ -945,12 +1000,39 @@ assert_health() {
       continue
     fi
     dir="$ARTIFACTS/$MODE/$ctx"
-    # Pingora logs refused handshakes at ERROR: gateway TCP probes always, and the
-    # deliberate-refusal checks from REFUSALS_FROM on.
-    hits=$(cat "$dir"/*.log | strip_ansi | grep -E ' (ERROR)|panic|fatal' \
-      | awk -v from="$REFUSALS_FROM" '/^\[pod\/grid-gateway-[^\/]+\/praxis\] .*Downstream handshake error / {
-          if ($0 ~ /tls handshake eof$/ || (from != "" && substr($2, 1, 19) >= from)) next
-        } { print }' | sort -u || true)
+    self_probe_ip=""
+    if [[ $MODE == local && $ctx == "$SITE_CTX" ]]; then
+      self_probe_ip=$(kubectl --context "$ctx" -n "$NS" get pods \
+        -l app.kubernetes.io/instance=grid-operator -o jsonpath='{.items[0].status.podIP}' || true)
+    fi
+    # Pingora logs refused handshakes at ERROR: gateway TCP probes always, the site's
+    # own mTLS probe under Local membership, and the deliberate-refusal checks from
+    # REFUSALS_FROM on. Filter only the own probe's paired identity rejection.
+    hits=$(cat "$dir"/*.log | strip_ansi | awk -v refusal_from="$REFUSALS_FROM" \
+      -v self_site="$SITE" -v self_ip="$self_probe_ip" '
+        function report(line) {
+          if (line ~ / (ERROR)|panic|fatal/) { print line }
+        }
+        pending_rejection != "" {
+          expected_self_probe = /^\[pod\/grid-gateway-[^\/]+\/praxis\] .*Downstream handshake error / \
+            && self_ip != "" && index($0, "from " self_ip ":") > 0 \
+            && $0 ~ /invalid peer certificate: ApplicationVerificationFailure$/
+          if (!expected_self_probe) { report(pending_rejection) }
+          pending_rejection = ""
+          if (expected_self_probe) { next }
+        }
+        /^\[pod\/grid-gateway-[^\/]+\/praxis\] .*peer SPIFFE ID not in trusted_spiffe_ids / \
+          && self_ip != "" && index($0, "peer_id=spiffe://grid.internal/site/" self_site) > 0 {
+          pending_rejection = $0
+          next
+        }
+        /^\[pod\/grid-gateway-[^\/]+\/praxis\] .*Downstream handshake error / {
+          if ($0 ~ /tls handshake eof$/ \
+            || (refusal_from != "" && substr($2, 1, 19) >= refusal_from)) { next }
+        }
+        { report($0) }
+        END { if (pending_rejection != "") { report(pending_rejection) } }
+      ' | sort -u || true)
     warns=$(cat "$dir"/*.log | strip_ansi | grep -E ' WARN' | sort -u || true)
     if [[ -n $warns ]]; then
       printf 'WARN [%s] %s: %s distinct WARN lines\n%s\n' "$MODE" "$ctx" "$(wc -l <<<"$warns")" "$warns"
