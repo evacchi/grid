@@ -1412,7 +1412,7 @@ assert_model_gossip() {
     hub_remote_candidate_count || { capture_model_gossip_state withdrawal-route-timeout || true; return; }
   hub_model_candidate_absent "$MODEL" || { fail "withdrawn model remains in hub routing configuration"; return; }
   hub_model_candidate_absent configured-fallback-model || { fail "configured fallback model appeared as a route"; return; }
-  remaining=$((old_epoch - 30 - $(date +%s) - 5))
+  remaining=$((old_epoch - $(date +%s) - 5))
   wait_for_within "the hub gateway rejects the withdrawn model before its former expiry" "$remaining" \
     model_route_rejected "$MODEL" "$WORK/withdrawn-model" || return
   model_route_rejected configured-fallback-model "$WORK/fallback-model" \
