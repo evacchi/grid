@@ -248,7 +248,7 @@ fn candidate_expiry_ms(
             return Err(format!("grid: candidates[{index}].expires_at must use UTC").into());
         }
         let milliseconds = deadline.unix_timestamp_nanos().div_euclid(1_000_000).max(0);
-        Some(u64::try_from(milliseconds).map_err(|_| -> FilterError {
+        Some(u64::try_from(milliseconds).map_err(|_conversion_error| -> FilterError {
             format!("grid: candidates[{index}].expires_at is outside the supported range").into()
         })?)
     } else {

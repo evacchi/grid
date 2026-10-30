@@ -803,7 +803,7 @@ mod tests {
         );
         for entries in [
             vec![later.clone(), static_duplicate.clone(), earlier.clone()],
-            vec![earlier.clone(), static_duplicate, later.clone()],
+            vec![earlier, static_duplicate, later],
         ] {
             let rendered = render(&overlay(entries), &INPUTS);
             assert_eq!(rendered.candidates.len(), 1, "duplicates produce one serving route");
