@@ -12,7 +12,6 @@ use std::{
 
 use praxis_filter::FilterError;
 use serde::Deserialize;
-use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::{
     dial::Dialed,
@@ -95,7 +94,7 @@ impl AdmissionState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateConfig {
-    /// Legacy Unix-millisecond deadline; when both expiry fields are present they must agree.
+    /// Unix-millisecond deadline for a discovered model; absent for static candidates.
     #[serde(default)]
     pub expires_at_ms: Option<u64>,
 
@@ -109,10 +108,6 @@ pub struct CandidateConfig {
     /// Optional final-hop credential reference.
     #[serde(default)]
     pub credential: Option<CandidateCredential>,
-
-    /// RFC 3339 UTC deadline for a discovered model inventory.
-    #[serde(default)]
-    pub expires_at: Option<String>,
 
     /// Whether this candidate is fresh (default: `true`).
     #[serde(default = "default_fresh")]
@@ -234,31 +229,6 @@ impl RouteCandidate {
     }
 }
 
-/// Normalize either supported discovered-model deadline into Unix milliseconds.
-fn candidate_expiry_ms(
-    index: usize,
-    legacy_deadline_ms: Option<u64>,
-    value: Option<&str>,
-) -> Result<Option<u64>, FilterError> {
-    let parsed_deadline_ms = if let Some(value) = value {
-        let deadline = OffsetDateTime::parse(value, &Rfc3339).map_err(|error| -> FilterError {
-            format!("grid: candidates[{index}].expires_at must be RFC 3339 UTC: {error}").into()
-        })?;
-        if deadline.offset() != UtcOffset::UTC {
-            return Err(format!("grid: candidates[{index}].expires_at must use UTC").into());
-        }
-        let milliseconds = deadline.unix_timestamp_nanos().div_euclid(1_000_000).max(0);
-        Some(u64::try_from(milliseconds).map_err(|_conversion_error| -> FilterError {
-            format!("grid: candidates[{index}].expires_at is outside the supported range").into()
-        })?)
-    } else {
-        None
-    };
-    if legacy_deadline_ms.is_some_and(|legacy| parsed_deadline_ms.is_some_and(|parsed| legacy != parsed)) {
-        return Err(format!("grid: candidates[{index}].expires_at conflicts with expires_at_ms").into());
-    }
-    Ok(parsed_deadline_ms.or(legacy_deadline_ms))
-}
 /// Build a deterministic stable ID from candidate identity fields.
 pub(crate) fn default_stable_id(kind: CapabilityKind, name: &str, site: &str, cluster: &str) -> Arc<str> {
     Arc::from(format!("{}/{name}/{site}/{cluster}", kind.as_str()))
@@ -324,9 +294,8 @@ fn validate_candidates_with_empty(
             || default_stable_id(cand.kind, &cand.name, &cand.site, &cand.cluster),
             Arc::from,
         );
-        let expires_at_ms = candidate_expiry_ms(index, cand.expires_at_ms, cand.expires_at.as_deref())?;
         candidates.push(RouteCandidate {
-            expires_at_ms,
+            expires_at_ms: cand.expires_at_ms,
             admission_state: cand.admission,
             capacity: None,
             rho: None,
@@ -477,6 +446,7 @@ fn validate_header_value(field: &str, value: &str) -> Result<(), FilterError> {
 )]
 mod tests {
     use super::*;
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     fn candidate(kind_str: &str, name: &str, site: &str, cluster: &str) -> CandidateConfig {
         let kind: CapabilityKind = serde_yaml::from_str(&format!("\"{kind_str}\"")).unwrap();
@@ -491,7 +461,6 @@ mod tests {
             publishes_load: true,
             site: site.to_owned(),
             stable_id: None,
-            expires_at: None,
         }
     }
 
@@ -502,7 +471,6 @@ mod tests {
         let deadline_ms_i64 = i64::try_from(deadline_ms).unwrap();
         let margin_ms = i64::try_from(grid_signals::CANDIDATE_EXPIRY_SKEW_MARGIN_MS).unwrap();
         let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
-        raw.expires_at = Some("2030-01-01T00:01:00Z".to_owned());
         raw.expires_at_ms = Some(deadline_ms);
         let candidates = validate_serving_candidates(vec![raw]).unwrap();
         let candidate = candidates.first().unwrap();
@@ -518,28 +486,6 @@ mod tests {
             candidate.expired_at(deadline_ms_i64),
             "deadline never receives a grace period"
         );
-    }
-
-    #[test]
-    fn conflicting_inventory_expiry_formats_are_rejected() {
-        let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
-        raw.expires_at_ms = Some(1_000);
-        raw.expires_at = Some("1970-01-01T00:00:02Z".to_owned());
-        let error = validate_serving_candidates(vec![raw]).expect_err("conflicting deadlines must refuse the snapshot");
-        assert!(error.to_string().contains("conflicts"), "error identifies the conflict");
-    }
-
-    #[test]
-    fn malformed_or_non_utc_inventory_expiry_is_rejected() {
-        for value in ["not-a-timestamp", "2030-01-01T01:00:00+01:00"] {
-            let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
-            raw.expires_at = Some(value.to_owned());
-            let error = validate_serving_candidates(vec![raw]).expect_err("invalid deadline must refuse the snapshot");
-            assert!(
-                error.to_string().contains("expires_at"),
-                "error identifies the invalid deadline"
-            );
-        }
     }
 
     #[test]

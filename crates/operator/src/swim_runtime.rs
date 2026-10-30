@@ -208,62 +208,42 @@ impl PendingDrops {
     }
 }
 
-/// Inbound packets that failed authentication, warned at most once per [`UNAUTHENTICATED_WARN_EVERY`].
-#[derive(Default)]
-struct UnauthenticatedDrops {
+/// Inbound packets dropped for one reason, warned at most once per window.
+struct RateLimitedDrops {
+    /// The reason logged for each dropped packet.
+    message: &'static str,
     /// When the last warning was logged.
     warned_at: Option<Instant>,
     /// Drops since that warning.
     suppressed: u64,
 }
 
-/// Least time between warnings about unauthenticated packets.
-const UNAUTHENTICATED_WARN_EVERY: Duration = Duration::from_secs(60);
+/// Least time between warnings about dropped SWIM packets.
+const DROPPED_PACKET_WARN_EVERY: Duration = Duration::from_secs(60);
 
-impl UnauthenticatedDrops {
-    /// Count one dropped packet, returning whether it was warned.
-    fn dropped(&mut self, from: SocketAddr, bytes: usize, now: Instant) -> bool {
-        let quiet = self
-            .warned_at
-            .is_some_and(|at| now.saturating_duration_since(at) < UNAUTHENTICATED_WARN_EVERY);
-        if quiet {
-            self.suppressed = self.suppressed.saturating_add(1);
-            tracing::debug!(addr = %from, bytes, "SWIM: dropped packet (authentication failed)");
-            return false;
+impl RateLimitedDrops {
+    /// Create a drop counter with its log message.
+    fn new(message: &'static str) -> Self {
+        Self {
+            message,
+            warned_at: None,
+            suppressed: 0,
         }
-        let suppressed = std::mem::take(&mut self.suppressed);
-        self.warned_at = Some(now);
-        tracing::warn!(addr = %from, bytes, suppressed, "SWIM: dropped packet (authentication failed)");
-        true
     }
-}
 
-/// Encrypted packets received without a configured key, warned at most once per window.
-#[derive(Default)]
-struct EncryptedWithoutKeyDrops {
-    /// When the last warning was logged.
-    warned_at: Option<Instant>,
-    /// Drops since that warning.
-    suppressed: u64,
-}
-
-/// Least time between warnings about encrypted packets received without a key.
-const ENCRYPTED_WITHOUT_KEY_WARN_EVERY: Duration = Duration::from_secs(60);
-
-impl EncryptedWithoutKeyDrops {
     /// Count one dropped packet, returning whether it was warned.
     fn dropped(&mut self, from: SocketAddr, bytes: usize, now: Instant) -> bool {
         let quiet = self
             .warned_at
-            .is_some_and(|at| now.saturating_duration_since(at) < ENCRYPTED_WITHOUT_KEY_WARN_EVERY);
+            .is_some_and(|at| now.saturating_duration_since(at) < DROPPED_PACKET_WARN_EVERY);
         if quiet {
             self.suppressed = self.suppressed.saturating_add(1);
-            tracing::debug!(addr = %from, bytes, "SWIM: dropping encrypted packet while no key is configured; peers may disagree on encryption");
+            tracing::debug!(addr = %from, bytes, message = self.message);
             return false;
         }
         let suppressed = std::mem::take(&mut self.suppressed);
         self.warned_at = Some(now);
-        tracing::warn!(addr = %from, bytes, suppressed, "SWIM: dropping encrypted packet while no key is configured; peers may disagree on encryption");
+        tracing::warn!(addr = %from, bytes, suppressed, message = self.message);
         true
     }
 }
@@ -1745,8 +1725,10 @@ async fn run_loop(
     let mut buf = vec![0_u8; 65_536];
     let mut age_tick = tokio::time::interval(Duration::from_secs(1));
     let mut pending_drops = PendingDrops::default();
-    let mut unauthenticated_drops = UnauthenticatedDrops::default();
-    let mut encrypted_without_key_drops = EncryptedWithoutKeyDrops::default();
+    let mut unauthenticated_drops = RateLimitedDrops::new("SWIM packet authentication failed");
+    let mut encrypted_without_key_drops = RateLimitedDrops::new(
+        "SWIM encrypted packet received without a configured key; peers may disagree on encryption",
+    );
     let own = [Some(advertise_addr), socket.local_addr().ok()];
     let mut seed_addrs = foreign_seeds(config.seeds.clone(), &own);
     let mut next_seed_announce_at = Instant::now() + Duration::from_secs(5);
@@ -3203,11 +3185,11 @@ mod tests {
     fn unauthenticated_drops_warn_once_per_window() {
         let t0 = now();
         let from = SocketAddr::from(([10, 0, 0, 1], 7946));
-        let mut drops = UnauthenticatedDrops::default();
+        let mut drops = RateLimitedDrops::new("SWIM packet authentication failed");
         assert!(drops.dropped(from, 10, t0), "first drop warns");
         assert!(!drops.dropped(from, 10, t0 + Duration::from_secs(1)), "then quiet");
         assert!(!drops.dropped(from, 10, t0 + Duration::from_secs(59)));
-        assert!(drops.dropped(from, 10, t0 + UNAUTHENTICATED_WARN_EVERY), "warns again");
+        assert!(drops.dropped(from, 10, t0 + DROPPED_PACKET_WARN_EVERY), "warns again");
         assert_eq!(drops.suppressed, 0, "the count resets on a warning");
     }
 
@@ -3215,12 +3197,12 @@ mod tests {
     fn encrypted_without_key_drops_warn_once_per_window() {
         let t0 = now();
         let from = SocketAddr::from(([10, 0, 0, 1], 7946));
-        let mut drops = EncryptedWithoutKeyDrops::default();
+        let mut drops = RateLimitedDrops::new("encrypted packet received without key");
         assert!(drops.dropped(from, 90, t0), "first mismatch warns");
         assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(1)), "then quiet");
         assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(59)));
         assert!(
-            drops.dropped(from, 90, t0 + ENCRYPTED_WITHOUT_KEY_WARN_EVERY),
+            drops.dropped(from, 90, t0 + DROPPED_PACKET_WARN_EVERY),
             "warns again"
         );
         assert_eq!(drops.suppressed, 0, "the count resets on a warning");

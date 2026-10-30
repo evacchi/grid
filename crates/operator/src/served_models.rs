@@ -26,8 +26,11 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures::{StreamExt as _, stream};
@@ -95,6 +98,9 @@ struct ServedModel {
     /// Deadline after which the set is no longer served.
     expires_at: Instant,
 
+    /// Monotonic revision independent of the refreshed expiry deadline.
+    revision: u64,
+
     /// RFC 3339 UTC deadline persisted with the model set.
     expires_at_status: String,
 }
@@ -126,6 +132,9 @@ pub(crate) struct DiscoveredModelInventory {
 
     /// Provider generation that produced this inventory.
     observed_generation: i64,
+
+    /// Monotonic revision used to order signed inventory updates.
+    revision: u64,
 }
 
 /// Model names selected for an inference provider.
@@ -170,6 +179,7 @@ impl ModelInventory {
             models,
             expires_at,
             observed_generation,
+            revision: 0,
         })
     }
 }
@@ -304,7 +314,7 @@ impl ServedModelMap {
     }
 
     /// Replace held sets for providers whose discovery poll succeeded.
-    fn insert_updated(&mut self, updated: Vec<ProviderPoll>, ttl: Duration) {
+    fn insert_updated(&mut self, updated: Vec<ProviderPoll>, ttl: Duration, revisions: &AtomicU64) {
         for ProviderPoll(outcome, name, source) in updated {
             if let PollOutcome::Served(discovered, completed_at) = outcome {
                 let Some((expires_at, expires_at_status)) = completed_at.status_expiry(ttl) else {
@@ -323,6 +333,7 @@ impl ServedModelMap {
                         source,
                         models,
                         expires_at,
+                        revision: next_inventory_revision(revisions),
                         expires_at_status,
                     },
                 );
@@ -338,6 +349,8 @@ impl ServedModelMap {
 pub struct ServedModelStore {
     /// Provider name to its held set.
     inner: Arc<RwLock<ServedModelMap>>,
+    /// Process-wide monotonic inventory revision source, shared by clones.
+    revisions: Arc<AtomicU64>,
 }
 
 impl ServedModelStore {
@@ -372,12 +385,11 @@ impl ServedModelStore {
         let network_id = provider.spec.grid_network_ref.as_str();
         let provider_id = provider.metadata.name.as_deref()?;
         let instance_uid = provider.metadata.uid.as_deref()?;
-        let selected = self.select_for(provider)?;
-        if selected.is_static() {
+        let ModelInventory::Discovered(selected) = self.select_for(provider)? else {
             return None;
-        }
+        };
         let expiry =
-            time::OffsetDateTime::parse(selected.expires_at()?, &time::format_description::well_known::Rfc3339).ok()?;
+            time::OffsetDateTime::parse(&selected.expires_at, &time::format_description::well_known::Rfc3339).ok()?;
         let expires_at_ms = u64::try_from(expiry.unix_timestamp_nanos() / 1_000_000).ok()?;
         Some(swim::ModelInventory {
             origin_site: origin_site.to_owned(),
@@ -385,9 +397,9 @@ impl ServedModelStore {
             network_id: network_id.to_owned(),
             provider_id: provider_id.to_owned(),
             provider_uid: instance_uid.to_owned(),
-            revision: expires_at_ms,
+            revision: selected.revision,
             expires_at_ms,
-            models: selected.models().to_vec(),
+            models: selected.models.to_vec(),
         })
     }
 
@@ -404,6 +416,7 @@ impl ServedModelStore {
                 models: Arc::clone(&held.models),
                 expires_at: held.expires_at_status.clone(),
                 observed_generation: held.source.generation,
+                revision: held.revision,
             })
     }
 
@@ -420,8 +433,25 @@ impl ServedModelStore {
         };
 
         map.retain_for_refresh(&updated, Instant::now());
-        map.insert_updated(updated, ttl);
+        map.insert_updated(updated, ttl, &self.revisions);
     }
+}
+
+/// Allocate a strictly increasing inventory revision using wall time as its process-start seed.
+fn next_inventory_revision(revisions: &AtomicU64) -> u64 {
+    let now_ms = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
+    revisions
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
+            Some(previous.max(now_ms).saturating_add(1))
+        })
+        .map(|previous| previous.max(now_ms).saturating_add(1))
+        .unwrap_or(u64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,9 +1041,9 @@ mod tests {
             owned(&["discovered"]),
             "only fresh discovered names are gossiped"
         );
-        assert_eq!(
-            inventory.revision, inventory.expires_at_ms,
-            "inventory revision must use the served-set expiry"
+        assert!(
+            inventory.revision < inventory.expires_at_ms,
+            "inventory revision is independent of its later expiry deadline"
         );
     }
 
@@ -1169,6 +1199,7 @@ mod tests {
                 models: owned(&["a"]).into(),
                 expires_at: expiry_after(Duration::from_secs(7200)),
                 observed_generation: 1,
+                revision: 0,
             }),
         };
 
@@ -1195,6 +1226,7 @@ mod tests {
                 models: owned(&["a"]).into(),
                 expires_at: expiry_after(Duration::from_secs(3600)),
                 observed_generation: 1,
+                revision: 0,
             }),
         };
 
@@ -1220,6 +1252,7 @@ mod tests {
                 models: owned(&["b"]).into(),
                 expires_at: expiry_after(Duration::from_secs(7200)),
                 observed_generation: 1,
+                revision: 0,
             }),
         };
 
@@ -1247,6 +1280,7 @@ mod tests {
                 models: owned(&["a"]).into(),
                 expires_at: expiry_after(Duration::from_secs(7200)),
                 observed_generation: 1,
+                revision: 0,
             }),
         };
 
@@ -1439,6 +1473,7 @@ mod tests {
                 models: owned(&["a"]).into(),
                 expires_at: "2030-01-01T00:00:00Z".to_owned(),
                 observed_generation: 1,
+                revision: 0,
             }),
         };
         assert_eq!(

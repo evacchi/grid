@@ -28,7 +28,7 @@ use kube::{
 use serde_json::{Value, json};
 use tokio::{
     sync::Mutex,
-    time::{Duration, timeout},
+    time::{Duration, timeout, timeout_at},
 };
 use tracing::info;
 
@@ -1114,7 +1114,8 @@ async fn publish_discovered_model_inventories(ctx: &OperatorCtx, client: &Client
     let networks = Box::pin(networks.list(&ListParams::default())).await?.items;
     let providers: Api<InferenceProvider> = Api::all(client.clone());
     let providers = Box::pin(providers.list(&ListParams::default())).await?.items;
-    for network in networks
+    let publish_deadline = tokio::time::Instant::now() + INVENTORY_PUBLISH_TIMEOUT;
+    'networks: for network in networks
         .iter()
         .filter(|network| signed_state_mode(network) == SignedStateMode::Enforce)
     {
@@ -1130,8 +1131,8 @@ async fn publish_discovered_model_inventories(ctx: &OperatorCtx, client: &Client
             && let Some(signing_key) = Box::pin(load_gossip_signing_identity(network, client, swim.site_name())).await
         {
             for inventory in inventories {
-                match timeout(
-                    INVENTORY_PUBLISH_TIMEOUT,
+                match timeout_at(
+                    publish_deadline,
                     publish_model_inventory_frames(swim, &inventory, signing_key.as_slice()),
                 )
                 .await
@@ -1142,10 +1143,10 @@ async fn publish_discovered_model_inventories(ctx: &OperatorCtx, client: &Client
                     },
                     Err(_elapsed) => {
                         tracing::warn!(
-                            provider = %inventory.provider_id,
                             timeout_secs = INVENTORY_PUBLISH_TIMEOUT.as_secs(),
-                            "local model inventory publication timed out"
+                            "model inventory publication round timed out"
                         );
+                        break 'networks;
                     },
                 }
             }
@@ -1154,7 +1155,7 @@ async fn publish_discovered_model_inventories(ctx: &OperatorCtx, client: &Client
     Ok(())
 }
 
-/// Bound how long one discovery round waits for SWIM queue capacity per inventory.
+/// Bound the total time a discovery round waits for SWIM queue capacity.
 const INVENTORY_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Queue every signed frame of one inventory, waiting for bounded queue capacity.

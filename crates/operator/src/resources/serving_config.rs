@@ -247,9 +247,6 @@ pub(crate) struct ServingCandidate {
     pub(crate) site: String,
     /// Load balancer cluster, and the `grid_provider` label its load is keyed on.
     pub(crate) cluster: String,
-    /// Discovered-model deadline enforced by the gateway on every request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expires_at: Option<String>,
     /// Freshness carried from the overlay.
     pub(crate) fresh: bool,
     /// Whether it takes new requests. Omitted when it does, so such a config
@@ -412,11 +409,9 @@ struct Folded {
     admission: AdmissionState,
     /// The first identity any duplicate carries.
     stable_id: Option<String>,
-    /// The earliest inventory deadline among duplicates.
-    expires_at: Option<(OffsetDateTime, String)>,
     /// The first credential locator any duplicate carries.
     credential: Option<ProjectedCredential>,
-    /// The earliest expiry, or `None` when any duplicate is static.
+    /// The earliest discovered inventory deadline among duplicates.
     expires_at_ms: Option<u64>,
 }
 
@@ -429,9 +424,15 @@ fn dedup<'overlay>(
 ) -> BTreeMap<CandidateKey<'overlay>, Folded> {
     let mut unique = BTreeMap::new();
     for candidate in overlay.filter(|candidate| routable(candidate)) {
-        let expires_at = match candidate.expires_at.as_ref() {
+        let expires_at_ms = match candidate.expires_at.as_deref() {
             Some(text) => match OffsetDateTime::parse(text, &Rfc3339) {
-                Ok(deadline) => Some((deadline, text)),
+                Ok(deadline) => match u64::try_from(deadline.unix_timestamp_nanos().div_euclid(1_000_000)) {
+                    Ok(milliseconds) => Some(milliseconds),
+                    Err(error) => {
+                        tracing::warn!(%error, "serving candidate has an out-of-range inventory deadline");
+                        continue;
+                    },
+                },
                 Err(error) => {
                     tracing::warn!(%error, "serving candidate has an invalid inventory deadline");
                     continue;
@@ -446,7 +447,6 @@ fn dedup<'overlay>(
             candidate.cluster.as_str(),
         );
         let admission = candidate.admission_state.unwrap_or(AdmissionState::NewAndExisting);
-        let expires_at_ms = candidate_expiry_ms(candidate.expires_at.as_deref());
         // Seeded with the identities of both folds, so the first candidate and every
         // duplicate after it take the same path: fresh only if all are, admission as
         // restricted as the most restricted.
@@ -454,15 +454,9 @@ fn dedup<'overlay>(
             fresh: true,
             admission: AdmissionState::NewAndExisting,
             stable_id: None,
-            expires_at: None,
             credential: None,
             expires_at_ms,
         });
-        if let Some((deadline, text)) = expires_at
-            && folded.expires_at.as_ref().is_none_or(|(held, _)| deadline < *held)
-        {
-            folded.expires_at = Some((deadline, text.clone()));
-        }
         folded.fresh &= candidate.fresh;
         folded.admission = folded.admission.max(admission);
         if folded.stable_id.is_none() {
@@ -473,7 +467,8 @@ fn dedup<'overlay>(
         }
         folded.expires_at_ms = match (folded.expires_at_ms, expires_at_ms) {
             (Some(held), Some(incoming)) => Some(held.min(incoming)),
-            _ => None,
+            (Some(held), None) | (None, Some(held)) => Some(held),
+            (None, None) => None,
         };
     }
     unique
@@ -505,7 +500,6 @@ fn candidates(overlay: &RoutingOverlay, inputs: &ServingInputs<'_>) -> Vec<Servi
             name: name.to_owned(),
             site: site.to_owned(),
             cluster: cluster.to_owned(),
-            expires_at: folded.expires_at.map(|(_, text)| text),
             fresh: folded.fresh,
             admission: folded.admission,
             publishes_load: publishes_load(inputs, remote, site, cluster),
@@ -516,18 +510,6 @@ fn candidates(overlay: &RoutingOverlay, inputs: &ServingInputs<'_>) -> Vec<Servi
             expires_at_ms: folded.expires_at_ms,
         })
         .collect()
-}
-
-/// Parse the overlay's RFC 3339 deadline to epoch milliseconds for the gateway.
-///
-/// An invalid present deadline becomes zero so the gateway fails closed.
-fn candidate_expiry_ms(expires_at: Option<&str>) -> Option<u64> {
-    expires_at.map(|timestamp| {
-        OffsetDateTime::parse(timestamp, &Rfc3339)
-            .ok()
-            .and_then(|parsed| u64::try_from(parsed.unix_timestamp_nanos() / 1_000_000).ok())
-            .unwrap_or_default()
-    })
 }
 
 /// Whether `site` publishes load for `cluster`: a peer's once heard, this site's when it has metrics.
@@ -789,17 +771,9 @@ mod tests {
             dynamic_only
                 .candidates
                 .first()
-                .and_then(|candidate| candidate.expires_at.as_deref()),
-            Some("2030-01-01T00:01:00Z"),
-            "the canonical deadline is the earliest discovered inventory expiry"
-        );
-        assert_eq!(
-            dynamic_only
-                .candidates
-                .first()
                 .and_then(|candidate| candidate.expires_at_ms),
             Some(1_893_456_060_000),
-            "the legacy millisecond field matches the canonical deadline"
+            "the canonical deadline is the earliest discovered inventory expiry"
         );
         for entries in [
             vec![later.clone(), static_duplicate.clone(), earlier.clone()],
@@ -811,15 +785,19 @@ mod tests {
                 rendered
                     .candidates
                     .first()
-                    .and_then(|candidate| candidate.expires_at.as_deref()),
-                Some("2030-01-01T00:01:00Z"),
+                    .and_then(|candidate| candidate.expires_at_ms),
+                Some(1_893_456_060_000),
                 "neither a static duplicate nor a later deadline may extend discovered inventory"
             );
             let wire: serde_json::Value =
                 serde_json::from_str(&to_text(&rendered).expect("serving JSON")).expect("valid serving JSON");
             assert_eq!(
-                wire["candidates"][0]["expires_at"], "2030-01-01T00:01:00Z",
+                wire["candidates"][0]["expires_at_ms"], 1_893_456_060_000_u64,
                 "the gateway receives the inventory deadline"
+            );
+            assert!(
+                wire["candidates"][0].get("expires_at").is_none(),
+                "the gateway receives one deadline field"
             );
         }
     }

@@ -1200,7 +1200,6 @@ mod tests {
             publishes_load: true,
             site: site.to_owned(),
             stable_id: None,
-            expires_at: None,
         }
     }
 

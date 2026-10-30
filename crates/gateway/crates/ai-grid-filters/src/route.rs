@@ -96,17 +96,43 @@ enum RouteDecision {
     Select,
 }
 
-/// Resolve the empty revision before preserving a prior filter's selection.
-fn route_decision(snapshot: &RouteSnapshot, earlier_selected: bool, now_ms: i64) -> RouteDecision {
-    if snapshot.candidates.iter().all(|candidate| candidate.expired_at(now_ms)) {
+/// Resolve withdrawals before preserving a prior filter's selection; scope inventory revisions to the request model.
+fn route_decision(
+    snapshot: &RouteSnapshot,
+    earlier_selected: bool,
+    model: Option<&str>,
+    now_ms: i64,
+) -> RouteDecision {
+    if snapshot.candidates.is_empty() {
         RouteDecision::NoRoute
-    } else if earlier_selected
-        && snapshot
+    } else if earlier_selected {
+        let Some(model) = model else {
+            return RouteDecision::KeepEarlier;
+        };
+        let matching = |candidate: &RouteCandidate| {
+            candidate.kind == CapabilityKind::InferenceModel && &*candidate.name == model
+        };
+        if !snapshot.candidates.iter().any(&matching) {
+            RouteDecision::KeepEarlier
+        } else if snapshot
             .candidates
             .iter()
+            .filter(|candidate| matching(*candidate))
+            .all(|candidate| candidate.expired_at(now_ms))
+        {
+            RouteDecision::NoRoute
+        } else if snapshot
+            .candidates
+            .iter()
+            .filter(|candidate| matching(*candidate))
             .all(|candidate| candidate.expires_at_ms.is_none())
-    {
-        RouteDecision::KeepEarlier
+        {
+            RouteDecision::KeepEarlier
+        } else {
+            RouteDecision::Select
+        }
+    } else if snapshot.candidates.iter().all(|candidate| candidate.expired_at(now_ms)) {
+        RouteDecision::NoRoute
     } else {
         RouteDecision::Select
     }
@@ -765,7 +791,7 @@ impl HttpFilter for GridSiteRouteFilter {
             .headers
             .get(&self.model_header)
             .and_then(|value| value.to_str().ok());
-        match route_decision(&snapshot, earlier_selected, grid_signals::now_ms()) {
+        match route_decision(&snapshot, earlier_selected, model, grid_signals::now_ms()) {
             RouteDecision::NoRoute => {
                 return Ok(refuse(Refused::NoRoute, "", self.turn.fetch_add(1, Ordering::Relaxed)));
             },
@@ -1521,7 +1547,6 @@ pub(crate) mod tests {
             publishes_load: true,
             site: site.to_owned(),
             stable_id: None,
-            expires_at: None,
         }])
         .unwrap();
         candidates[0].admission_state = admission;
@@ -1717,7 +1742,6 @@ pub(crate) mod tests {
                 .map(|(name, cluster)| CandidateConfig {
                     expires_at_ms: None,
                     stable_id: None,
-                    expires_at: None,
                     cluster: cluster.to_owned(),
                     credential: None,
                     admission: AdmissionState::default(),
@@ -2007,7 +2031,7 @@ pub(crate) mod tests {
             "stored-state pins cannot bypass inventory expiry"
         );
         assert_eq!(
-            route_decision(&snapshot, true, now_ms),
+            route_decision(&snapshot, true, Some("llama"), now_ms),
             RouteDecision::NoRoute,
             "an earlier filter choice cannot bypass an expired snapshot"
         );
@@ -2026,7 +2050,7 @@ pub(crate) mod tests {
         candidates[0].expires_at_ms = Some(u64::try_from(now_ms.saturating_add(600_000)).unwrap_or(u64::MAX));
         let snapshot = RouteSnapshot::from_static(candidates.clone(), Arc::from("east"));
         assert_eq!(
-            route_decision(&snapshot, true, now_ms),
+            route_decision(&snapshot, true, Some("llama"), now_ms),
             RouteDecision::Select,
             "dynamic routes require deadline-aware selection even after another filter chose a cluster"
         );
@@ -2650,7 +2674,7 @@ pub(crate) mod tests {
     fn empty_snapshot_rejects_even_with_a_preselected_cluster() {
         let empty = RouteSnapshot::from_static(Vec::new(), Arc::from("local"));
         assert!(matches!(
-            route_decision(&empty, true, TEST_NOW_MS),
+            route_decision(&empty, true, Some("llama"), TEST_NOW_MS),
             RouteDecision::NoRoute
         ));
 
@@ -2659,7 +2683,7 @@ pub(crate) mod tests {
             Arc::from("local"),
         );
         assert!(matches!(
-            route_decision(&active, true, TEST_NOW_MS),
+            route_decision(&active, true, Some("llama"), TEST_NOW_MS),
             RouteDecision::KeepEarlier
         ));
     }
