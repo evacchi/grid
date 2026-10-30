@@ -1485,7 +1485,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         descriptor::{CandidateConfig, validate_candidates},
-        snapshot::{Inputs, Learned, decisions_for},
+        snapshot::{Inputs, Learned},
     };
 
     /// Fixed wall-clock instant used by routing tests.
@@ -1555,14 +1555,9 @@ pub(crate) mod tests {
         for (candidate, (_, _, admission)) in candidates.iter_mut().zip(&sorted) {
             candidate.admission_state = *admission;
         }
-        RouteSnapshot {
-            decisions: decisions_for(&candidates),
-            scores: sorted.iter().map(|(_, queue, _)| *queue).collect(),
-            candidates,
-            local_site: Arc::from("a"),
-            shedding: BTreeSet::new(),
-            provider_hop_clusters: Arc::default(),
-        }
+        let mut snapshot = RouteSnapshot::from_static(candidates, Arc::from("a"));
+        snapshot.scores = sorted.iter().map(|(_, queue, _)| *queue).collect();
+        snapshot
     }
 
     /// Affinity on, with no exploration so outcomes are deterministic.
