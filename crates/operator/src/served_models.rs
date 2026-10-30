@@ -450,8 +450,7 @@ fn next_inventory_revision(revisions: &AtomicU64) -> u64 {
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
             Some(previous.max(now_ms).saturating_add(1))
         })
-        .map(|previous| previous.max(now_ms).saturating_add(1))
-        .unwrap_or(u64::MAX)
+        .map_or(u64::MAX, |previous| previous.max(now_ms).saturating_add(1))
 }
 
 // ---------------------------------------------------------------------------

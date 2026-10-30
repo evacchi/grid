@@ -445,8 +445,9 @@ fn validate_header_value(field: &str, value: &str) -> Result<(), FilterError> {
     reason = "tests"
 )]
 mod tests {
-    use super::*;
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+    use super::*;
 
     fn candidate(kind_str: &str, name: &str, site: &str, cluster: &str) -> CandidateConfig {
         let kind: CapabilityKind = serde_yaml::from_str(&format!("\"{kind_str}\"")).unwrap();

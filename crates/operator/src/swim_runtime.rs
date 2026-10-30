@@ -3201,10 +3201,7 @@ mod tests {
         assert!(drops.dropped(from, 90, t0), "first mismatch warns");
         assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(1)), "then quiet");
         assert!(!drops.dropped(from, 90, t0 + Duration::from_secs(59)));
-        assert!(
-            drops.dropped(from, 90, t0 + DROPPED_PACKET_WARN_EVERY),
-            "warns again"
-        );
+        assert!(drops.dropped(from, 90, t0 + DROPPED_PACKET_WARN_EVERY), "warns again");
         assert_eq!(drops.suppressed, 0, "the count resets on a warning");
     }
 

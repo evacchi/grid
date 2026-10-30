@@ -97,34 +97,28 @@ enum RouteDecision {
 }
 
 /// Resolve withdrawals before preserving a prior filter's selection; scope inventory revisions to the request model.
-fn route_decision(
-    snapshot: &RouteSnapshot,
-    earlier_selected: bool,
-    model: Option<&str>,
-    now_ms: i64,
-) -> RouteDecision {
+fn route_decision(snapshot: &RouteSnapshot, earlier_selected: bool, model: Option<&str>, now_ms: i64) -> RouteDecision {
     if snapshot.candidates.is_empty() {
         RouteDecision::NoRoute
     } else if earlier_selected {
         let Some(model) = model else {
             return RouteDecision::KeepEarlier;
         };
-        let matching = |candidate: &RouteCandidate| {
-            candidate.kind == CapabilityKind::InferenceModel && &*candidate.name == model
-        };
+        let matching =
+            |candidate: &RouteCandidate| candidate.kind == CapabilityKind::InferenceModel && &*candidate.name == model;
         if !snapshot.candidates.iter().any(&matching) {
             RouteDecision::KeepEarlier
         } else if snapshot
             .candidates
             .iter()
-            .filter(|candidate| matching(*candidate))
+            .filter(|candidate| matching(candidate))
             .all(|candidate| candidate.expired_at(now_ms))
         {
             RouteDecision::NoRoute
         } else if snapshot
             .candidates
             .iter()
-            .filter(|candidate| matching(*candidate))
+            .filter(|candidate| matching(candidate))
             .all(|candidate| candidate.expires_at_ms.is_none())
         {
             RouteDecision::KeepEarlier
