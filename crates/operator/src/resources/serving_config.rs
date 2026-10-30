@@ -416,7 +416,7 @@ struct Folded {
     expires_at: Option<(OffsetDateTime, String)>,
     /// The first credential locator any duplicate carries.
     credential: Option<ProjectedCredential>,
-    /// The latest expiry, or `None` when any duplicate is static.
+    /// The earliest expiry, or `None` when any duplicate is static.
     expires_at_ms: Option<u64>,
 }
 
@@ -472,7 +472,7 @@ fn dedup<'overlay>(
             folded.credential.clone_from(&candidate.credential);
         }
         folded.expires_at_ms = match (folded.expires_at_ms, expires_at_ms) {
-            (Some(held), Some(incoming)) => Some(held.max(incoming)),
+            (Some(held), Some(incoming)) => Some(held.min(incoming)),
             _ => None,
         };
     }
@@ -784,9 +784,26 @@ mod tests {
         let mut earlier = later.clone();
         earlier.expires_at = Some("2030-01-01T00:01:00Z".to_owned());
         let static_duplicate = cand("discovered-model", "site-b", "pool-b", None);
+        let dynamic_only = render(&overlay(vec![later.clone(), earlier.clone()]), &INPUTS);
+        assert_eq!(
+            dynamic_only
+                .candidates
+                .first()
+                .and_then(|candidate| candidate.expires_at.as_deref()),
+            Some("2030-01-01T00:01:00Z"),
+            "the canonical deadline is the earliest discovered inventory expiry"
+        );
+        assert_eq!(
+            dynamic_only
+                .candidates
+                .first()
+                .and_then(|candidate| candidate.expires_at_ms),
+            Some(1_893_456_060_000),
+            "the legacy millisecond field matches the canonical deadline"
+        );
         for entries in [
             vec![later.clone(), static_duplicate.clone(), earlier.clone()],
-            vec![earlier, static_duplicate, later],
+            vec![earlier.clone(), static_duplicate, later.clone()],
         ] {
             let rendered = render(&overlay(entries), &INPUTS);
             assert_eq!(rendered.candidates.len(), 1, "duplicates produce one serving route");

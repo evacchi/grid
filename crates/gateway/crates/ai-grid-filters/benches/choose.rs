@@ -68,7 +68,6 @@ fn snapshot(sites: u32, shape: Shape) -> RouteSnapshot {
                 site: Arc::clone(&site),
                 stable_id: site,
                 dial: None,
-                expires_at: None,
                 upstream: None,
             }
         })

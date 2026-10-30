@@ -6515,8 +6515,8 @@ mod tests {
             &[],
             &[],
             &[],
-            &[remote],
-            &[inventory],
+            &[remote.clone()],
+            &[inventory.clone()],
             "grid-a",
             "local-site",
             None,
@@ -6535,6 +6535,29 @@ mod tests {
         assert_eq!(candidate.site, "remote-site");
         assert_eq!(candidate.cluster, "remote-cluster");
         assert!(candidate.expires_at.is_some());
+
+        let unsupported_overlay = render_routing_overlay_with_admission(
+            &network,
+            &[],
+            &[],
+            &[],
+            &[remote],
+            &[inventory],
+            "grid-a",
+            "local-site",
+            None,
+            None,
+            None,
+            &scoring::ScoringWeights::default(),
+            None,
+            &ServedModelStore::new(),
+            CandidateExpirySupport::Unsupported,
+        )
+        .unwrap_or_else(|_| std::process::abort());
+        assert!(
+            unsupported_overlay.candidates.is_empty(),
+            "discovered route must be withheld when the gateway does not enforce expiry"
+        );
 
         let mut unsupported = overlay.clone();
         filter_for_gateway_candidate_expiry(

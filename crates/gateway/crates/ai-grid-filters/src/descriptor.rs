@@ -95,7 +95,7 @@ impl AdmissionState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateConfig {
-    /// Unix-millisecond deadline for a discovered model; absent for static candidates.
+    /// Legacy Unix-millisecond deadline; when both expiry fields are present they must agree.
     #[serde(default)]
     pub expires_at_ms: Option<u64>,
 
@@ -194,9 +194,6 @@ pub struct RouteCandidate {
     /// Optional final-hop credential reference.
     pub credential: Option<CandidateCredential>,
 
-    /// Validated UTC inventory deadline, enforced on every request.
-    pub expires_at: Option<OffsetDateTime>,
-
     /// Whether this candidate is fresh. Preserved from config, but Grid owns
     /// freshness ordering.
     pub fresh: bool,
@@ -235,27 +232,32 @@ impl RouteCandidate {
                 >= i128::from(deadline)
         })
     }
-
-    /// Whether the inventory deadline has reached the contract's 30-second clock-lag margin.
-    pub(crate) fn is_expired_at(&self, now: OffsetDateTime) -> bool {
-        self.expires_at
-            .is_some_and(|deadline| now >= deadline.saturating_sub(time::Duration::seconds(30)))
-    }
 }
 
-/// Parse an optional discovered-model deadline before it enters a routing snapshot.
-fn candidate_expiry(index: usize, value: Option<&str>) -> Result<Option<OffsetDateTime>, FilterError> {
-    value
-        .map(|value| {
-            let deadline = OffsetDateTime::parse(value, &Rfc3339).map_err(|error| -> FilterError {
-                format!("grid: candidates[{index}].expires_at must be RFC 3339 UTC: {error}").into()
-            })?;
-            if deadline.offset() != UtcOffset::UTC {
-                return Err(format!("grid: candidates[{index}].expires_at must use UTC").into());
-            }
-            Ok(deadline)
-        })
-        .transpose()
+/// Normalize either supported discovered-model deadline into Unix milliseconds.
+fn candidate_expiry_ms(
+    index: usize,
+    legacy_deadline_ms: Option<u64>,
+    value: Option<&str>,
+) -> Result<Option<u64>, FilterError> {
+    let parsed_deadline_ms = if let Some(value) = value {
+        let deadline = OffsetDateTime::parse(value, &Rfc3339).map_err(|error| -> FilterError {
+            format!("grid: candidates[{index}].expires_at must be RFC 3339 UTC: {error}").into()
+        })?;
+        if deadline.offset() != UtcOffset::UTC {
+            return Err(format!("grid: candidates[{index}].expires_at must use UTC").into());
+        }
+        let milliseconds = deadline.unix_timestamp_nanos().div_euclid(1_000_000).max(0);
+        Some(u64::try_from(milliseconds).map_err(|_| -> FilterError {
+            format!("grid: candidates[{index}].expires_at is outside the supported range").into()
+        })?)
+    } else {
+        None
+    };
+    if legacy_deadline_ms.is_some_and(|legacy| parsed_deadline_ms.is_some_and(|parsed| legacy != parsed)) {
+        return Err(format!("grid: candidates[{index}].expires_at conflicts with expires_at_ms").into());
+    }
+    Ok(parsed_deadline_ms.or(legacy_deadline_ms))
 }
 /// Build a deterministic stable ID from candidate identity fields.
 pub(crate) fn default_stable_id(kind: CapabilityKind, name: &str, site: &str, cluster: &str) -> Arc<str> {
@@ -322,8 +324,9 @@ fn validate_candidates_with_empty(
             || default_stable_id(cand.kind, &cand.name, &cand.site, &cand.cluster),
             Arc::from,
         );
+        let expires_at_ms = candidate_expiry_ms(index, cand.expires_at_ms, cand.expires_at.as_deref())?;
         candidates.push(RouteCandidate {
-            expires_at_ms: cand.expires_at_ms,
+            expires_at_ms,
             admission_state: cand.admission,
             capacity: None,
             rho: None,
@@ -333,7 +336,6 @@ fn validate_candidates_with_empty(
             silent: false,
             cluster: Arc::from(cand.cluster.as_str()),
             credential: cand.credential,
-            expires_at: candidate_expiry(index, cand.expires_at.as_deref())?,
             fresh: cand.fresh,
             kind: cand.kind,
             name: Arc::from(cand.name.as_str()),
@@ -496,22 +498,35 @@ mod tests {
     #[test]
     fn inventory_expiry_is_enforced_at_the_clock_lag_boundary() {
         let deadline = OffsetDateTime::parse("2030-01-01T00:01:00Z", &Rfc3339).unwrap();
+        let deadline_ms = u64::try_from(deadline.unix_timestamp_nanos().div_euclid(1_000_000)).unwrap();
+        let deadline_ms_i64 = i64::try_from(deadline_ms).unwrap();
+        let margin_ms = i64::try_from(grid_signals::CANDIDATE_EXPIRY_SKEW_MARGIN_MS).unwrap();
         let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
         raw.expires_at = Some("2030-01-01T00:01:00Z".to_owned());
+        raw.expires_at_ms = Some(deadline_ms);
         let candidates = validate_serving_candidates(vec![raw]).unwrap();
         let candidate = candidates.first().unwrap();
         assert!(
-            !candidate.is_expired_at(deadline.saturating_sub(time::Duration::seconds(31))),
+            !candidate.expired_at(deadline_ms_i64.saturating_sub(margin_ms).saturating_sub(1)),
             "route remains usable before the safety margin"
         );
         assert!(
-            candidate.is_expired_at(deadline.saturating_sub(time::Duration::seconds(30))),
+            candidate.expired_at(deadline_ms_i64.saturating_sub(margin_ms)),
             "route expires exactly at the safety margin"
         );
         assert!(
-            candidate.is_expired_at(deadline),
+            candidate.expired_at(deadline_ms_i64),
             "deadline never receives a grace period"
         );
+    }
+
+    #[test]
+    fn conflicting_inventory_expiry_formats_are_rejected() {
+        let mut raw = candidate("inference_model", "m", "site-a", "pool-a");
+        raw.expires_at_ms = Some(1_000);
+        raw.expires_at = Some("1970-01-01T00:00:02Z".to_owned());
+        let error = validate_serving_candidates(vec![raw]).expect_err("conflicting deadlines must refuse the snapshot");
+        assert!(error.to_string().contains("conflicts"), "error identifies the conflict");
     }
 
     #[test]

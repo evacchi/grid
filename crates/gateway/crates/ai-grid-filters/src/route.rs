@@ -31,7 +31,6 @@ use praxis_filter::{
     parse_filter_config,
 };
 use serde::Deserialize;
-use time::OffsetDateTime;
 
 use crate::{
     control::Tuning,
@@ -98,15 +97,14 @@ enum RouteDecision {
 }
 
 /// Resolve the empty revision before preserving a prior filter's selection.
-fn route_decision(snapshot: &RouteSnapshot, earlier_selected: bool) -> RouteDecision {
-    let now = OffsetDateTime::now_utc();
-    if snapshot.candidates.iter().all(|candidate| candidate.is_expired_at(now)) {
+fn route_decision(snapshot: &RouteSnapshot, earlier_selected: bool, now_ms: i64) -> RouteDecision {
+    if snapshot.candidates.iter().all(|candidate| candidate.expired_at(now_ms)) {
         RouteDecision::NoRoute
     } else if earlier_selected
         && snapshot
             .candidates
             .iter()
-            .all(|candidate| candidate.expires_at.is_none())
+            .all(|candidate| candidate.expires_at_ms.is_none())
     {
         RouteDecision::KeepEarlier
     } else {
@@ -761,22 +759,23 @@ impl HttpFilter for GridSiteRouteFilter {
                 .push(http::header::HeaderName::from_static(name));
         }
         let snapshot = self.snapshot.load();
-        match route_decision(&snapshot, ctx.cluster.is_some() || ctx.upstream.is_some()) {
+        let earlier_selected = ctx.cluster.is_some() || ctx.upstream.is_some();
+        let model = ctx
+            .request
+            .headers
+            .get(&self.model_header)
+            .and_then(|value| value.to_str().ok());
+        match route_decision(&snapshot, earlier_selected, grid_signals::now_ms()) {
             RouteDecision::NoRoute => {
                 return Ok(refuse(Refused::NoRoute, "", self.turn.fetch_add(1, Ordering::Relaxed)));
             },
             RouteDecision::KeepEarlier => return Ok(FilterAction::Continue),
+            RouteDecision::Select if earlier_selected && model.is_none() => return Ok(FilterAction::Continue),
             RouteDecision::Select => {
                 ctx.cluster = None;
                 ctx.upstream = None;
             },
         }
-        // A copy of the request reference, so the model outlives writes to ctx.
-        let request = ctx.request;
-        let model = request
-            .headers
-            .get(&self.model_header)
-            .and_then(|value| value.to_str().ok());
         if let Some(action) = self.pin(ctx, model)? {
             return Ok(action);
         }
@@ -1002,9 +1001,8 @@ fn pinned_target<'snap>(
     if at_site.peek().is_none() {
         return Target::Gone;
     }
-    let now = OffsetDateTime::now_utc();
     at_site
-        .find(|candidate| is_admitted_for_new_request(candidate.admission_state) && !candidate.is_expired_at(now))
+        .find(|candidate| is_admitted_for_new_request(candidate.admission_state) && !candidate.expired_at(now_ms))
         .map_or(Target::Unavailable, Target::Found)
 }
 
@@ -1323,7 +1321,7 @@ fn matching<'snap, 'req>(
 where
     'snap: 'req,
 {
-    let now = OffsetDateTime::now_utc();
+    let now_ms = grid_signals::now_ms();
     snapshot
         .candidates
         .iter()
@@ -1334,7 +1332,7 @@ where
             candidate.kind == kind
                 && &*candidate.name == name
                 && is_admitted_for_new_request(candidate.admission_state)
-                && !candidate.is_expired_at(now)
+                && !candidate.expired_at(now_ms)
                 && routable(candidate)
         })
 }
@@ -1668,12 +1666,13 @@ pub(crate) mod tests {
     #[test]
     fn discovered_candidates_stop_routing_before_expiry_with_clock_skew_margin() {
         let mut candidates = one("llama", "a", "pool-a", AdmissionState::NewAndExisting);
+        let now_ms = grid_signals::now_ms();
         if let Some(candidate) = candidates.first_mut() {
-            candidate.expires_at_ms = Some(100_000);
+            candidate.expires_at_ms = Some(u64::try_from(now_ms.saturating_add(300_000)).unwrap_or(u64::MAX));
         }
         let snapshot = RouteSnapshot::from_static(candidates, Arc::from("a"));
-        let routable_before = |candidate: &RouteCandidate| !candidate.expired_at(69_999);
-        let routable_after = |candidate: &RouteCandidate| !candidate.expired_at(70_000);
+        let routable_before = |candidate: &RouteCandidate| !candidate.expired_at(now_ms.saturating_add(269_999));
+        let routable_after = |candidate: &RouteCandidate| !candidate.expired_at(now_ms.saturating_add(270_000));
 
         assert!(
             select_spread(
@@ -1700,7 +1699,12 @@ pub(crate) mod tests {
             "the route is withdrawn at the deadline minus the 30-second skew margin"
         );
         assert!(matches!(
-            pinned_target(&snapshot, Some(&holder("a", Some("pool-a"))), Some("llama"), 70_000),
+            pinned_target(
+                &snapshot,
+                Some(&holder("a", Some("pool-a"))),
+                Some("llama"),
+                now_ms.saturating_add(270_000)
+            ),
             Target::Gone
         ));
     }
@@ -1983,7 +1987,8 @@ pub(crate) mod tests {
     #[test]
     fn expired_inventory_cannot_route_from_a_retained_snapshot() {
         let mut candidates = one("llama", "east", "expired-pool", AdmissionState::NewAndExisting);
-        candidates[0].expires_at = Some(OffsetDateTime::now_utc().saturating_add(time::Duration::seconds(29)));
+        let now_ms = grid_signals::now_ms();
+        candidates[0].expires_at_ms = Some(u64::try_from(now_ms.saturating_add(29_000)).unwrap_or(u64::MAX));
         let snapshot = RouteSnapshot::from_static(candidates.clone(), Arc::from("east"));
         assert!(
             select_spread(
@@ -1998,14 +2003,11 @@ pub(crate) mod tests {
             "expired inventory cannot be selected even without a config reload"
         );
         assert!(
-            matches!(
-                pinned_target(&snapshot, None, Some("llama"), TEST_NOW_MS),
-                Target::Unavailable
-            ),
+            matches!(pinned_target(&snapshot, None, Some("llama"), now_ms), Target::Gone),
             "stored-state pins cannot bypass inventory expiry"
         );
         assert_eq!(
-            route_decision(&snapshot, true),
+            route_decision(&snapshot, true, now_ms),
             RouteDecision::NoRoute,
             "an earlier filter choice cannot bypass an expired snapshot"
         );
@@ -2020,10 +2022,11 @@ pub(crate) mod tests {
     #[test]
     fn fresh_inventory_routes_and_revalidates_an_earlier_selection() {
         let mut candidates = one("llama", "east", "discovered-pool", AdmissionState::NewAndExisting);
-        candidates[0].expires_at = Some(OffsetDateTime::now_utc().saturating_add(time::Duration::seconds(600)));
+        let now_ms = grid_signals::now_ms();
+        candidates[0].expires_at_ms = Some(u64::try_from(now_ms.saturating_add(600_000)).unwrap_or(u64::MAX));
         let snapshot = RouteSnapshot::from_static(candidates.clone(), Arc::from("east"));
         assert_eq!(
-            route_decision(&snapshot, true),
+            route_decision(&snapshot, true, now_ms),
             RouteDecision::Select,
             "dynamic routes require deadline-aware selection even after another filter chose a cluster"
         );
@@ -2646,13 +2649,19 @@ pub(crate) mod tests {
     #[test]
     fn empty_snapshot_rejects_even_with_a_preselected_cluster() {
         let empty = RouteSnapshot::from_static(Vec::new(), Arc::from("local"));
-        assert!(matches!(route_decision(&empty, true), RouteDecision::NoRoute));
+        assert!(matches!(
+            route_decision(&empty, true, TEST_NOW_MS),
+            RouteDecision::NoRoute
+        ));
 
         let active = RouteSnapshot::from_static(
             one("llama", "east", "pool-a", AdmissionState::NewAndExisting),
             Arc::from("local"),
         );
-        assert!(matches!(route_decision(&active, true), RouteDecision::KeepEarlier));
+        assert!(matches!(
+            route_decision(&active, true, TEST_NOW_MS),
+            RouteDecision::KeepEarlier
+        ));
     }
 
     #[test]
@@ -2778,6 +2787,42 @@ pub(crate) mod tests {
         );
         filter.clusters = clusters.map(|clusters| clusters.iter().map(|cluster| Arc::from(*cluster)).collect());
         filter
+    }
+
+    #[tokio::test]
+    async fn a_request_without_a_model_keeps_an_earlier_route() {
+        let mut candidates = one("llama", "east", "pool-a", OPEN);
+        candidates[0].expires_at_ms = Some(u64::try_from(grid_signals::now_ms().saturating_add(60_000)).unwrap());
+        let filter = filter(
+            RouteSnapshot::from_static(candidates, Arc::from("local")),
+            AffinitySettings::default(),
+        );
+        let request = praxis_filter::Request {
+            headers: http::HeaderMap::new(),
+            method: http::Method::POST,
+            uri: http::Uri::from_static("/v1/chat/completions"),
+        };
+        let mut ctx = context(&request);
+        let earlier_dial = dial_to("earlier-cluster", "10.0.0.8:8443", 1);
+        ctx.cluster = Some(Arc::from("earlier-cluster"));
+        ctx.upstream = Some(earlier_dial.upstream().clone());
+
+        let action = filter.on_request(&mut ctx).await.expect("keeps earlier route");
+
+        assert!(
+            matches!(action, FilterAction::Continue),
+            "the prior filter's route continues"
+        );
+        assert_eq!(
+            ctx.cluster.as_deref(),
+            Some("earlier-cluster"),
+            "the earlier cluster remains selected"
+        );
+        assert_eq!(
+            ctx.upstream.as_ref().map(|upstream| &*upstream.address),
+            Some("10.0.0.8:8443"),
+            "the earlier upstream remains selected"
+        );
     }
 
     /// One request for `llama` at `path` carrying a caller credential.

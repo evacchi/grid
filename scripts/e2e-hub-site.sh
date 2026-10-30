@@ -155,8 +155,9 @@ cluster_exists() {
 image() { printf '%s%s:%s' "$IMAGE_PREFIX" "$1" "$IMAGE_TAG"; }
 
 prepare_vcr_image() {
-  local platform=$VCR_PLATFORM image=ghcr.io/neuralmagic/vllm-vcr:vllm0.23
-  if [[ -z $platform && $(uname -m) == arm64 ]]; then
+  local platform=$VCR_PLATFORM arch image=ghcr.io/neuralmagic/vllm-vcr:vllm0.23
+  arch=$(uname -m)
+  if [[ -z $platform && ( $arch == arm64 || $arch == aarch64 ) ]]; then
     platform=linux/amd64
   fi
   [[ -z $platform ]] && return 0
@@ -1411,7 +1412,7 @@ assert_model_gossip() {
     hub_remote_candidate_count || { capture_model_gossip_state withdrawal-route-timeout || true; return; }
   hub_model_candidate_absent "$MODEL" || { fail "withdrawn model remains in hub routing configuration"; return; }
   hub_model_candidate_absent configured-fallback-model || { fail "configured fallback model appeared as a route"; return; }
-  remaining=$((old_epoch - $(date +%s)))
+  remaining=$((old_epoch - 30 - $(date +%s) - 5))
   wait_for_within "the hub gateway rejects the withdrawn model before its former expiry" "$remaining" \
     model_route_rejected "$MODEL" "$WORK/withdrawn-model" || return
   model_route_rejected configured-fallback-model "$WORK/fallback-model" \
@@ -1453,19 +1454,21 @@ assert_model_gossip() {
   eventually "the remote route recovers after failed discovery" hub_candidates_match "$WORK/single-models.json" || return
   wait_discovered_model_served || { fail "remote inference recovers after a failed poll"; return; }
 
-  capture_model_gossip_state retained-before-stop || return
-  local retained_config="$dir/retained-before-stop-routing-config.json"
-  old_expiry=$(jq -er '.status.servedModelsExpiresAt' "$dir/retained-before-stop-site-status.json") || return
-  old_epoch=$(site_inventory_expiry_epoch "$dir/retained-before-stop-site-status.json") || { fail "parse retained candidate expiry"; return; }
   HUB_OPERATOR_REPLICAS_ORIGINAL=$(k "$HUB_CTX" get deployment grid-operator -o jsonpath='{.spec.replicas}')
   [[ $HUB_OPERATOR_REPLICAS_ORIGINAL =~ ^[0-9]+$ ]] || { fail "read hub operator replica count"; return; }
-  cp "$dir/retained-before-stop-routing-config.json" "$WORK/retained-routing-config.json"
   k "$HUB_CTX" scale deployment/grid-operator --replicas=0 >/dev/null || { fail "stop hub operator updates"; return; }
   HUB_OPERATOR_SCALED=1
   eventually "hub operator stopped after retaining the rendered routing configuration" hub_operator_stopped || {
     restore_hub_operator || true
     return
   }
+  capture_model_gossip_state retained-after-stop || return
+  local retained_config="$dir/retained-after-stop-routing-config.json"
+  cp "$retained_config" "$WORK/retained-routing-config.json"
+  old_expiry=$(jq -er --arg model "$MODEL" --arg site "$SITE" \
+    '.candidates[] | select(.kind == "inference_model" and .name == $model and .site == $site and .cluster == "vcr") | .expires_at' \
+    "$retained_config") || { fail "read retained hub candidate expiry"; return; }
+  old_epoch=$(date -d "$old_expiry" +%s) || { fail "parse retained candidate expiry"; return; }
   discovered_model_served || fail "retained gateway route should serve before the expiry safety boundary"
   margin_epoch=$((old_epoch - 30))
   GATEWAY_SAFETY_EPOCH=$margin_epoch
@@ -2531,9 +2534,10 @@ unsigned_refused() {
 }
 
 site_received_signed_probe() {
+  local remote_provider_count_before=${1:-0}
   if site_route; then
     k "$SITE_CTX" get gridnetwork grid -o json \
-      | jq -e '(.status.remoteProviderCount // 0) >= 1' >/dev/null
+      | jq -e --argjson before "$remote_provider_count_before" '(.status.remoteProviderCount // 0) > $before' >/dev/null
   else
     k "$SITE_CTX" get configmap grid-overlay-grid-grid-gateway -o json \
       | jq -e --arg model signed-state-probe --arg cluster signed-state-probe \
@@ -2545,7 +2549,7 @@ site_received_signed_probe() {
 # assert_membership saw came from verified state. Once the site stops signing, the hub
 # refuses its state.
 assert_signed_state() {
-  local ctx logs since publication_errors
+  local ctx logs since publication_errors remote_provider_count_before=0
   [[ $SIGNED_STATE == enforce ]] || return 0
   for ctx in "$HUB_CTX" "$SITE_CTX"; do
     logs=$(signed_operator_logs "$ctx" --since-time="$SIGNED_FROM")
@@ -2571,6 +2575,8 @@ assert_signed_state() {
       || die "hub gateway identity is not Active on the site"
   fi
   if site_route; then
+    remote_provider_count_before=$(k "$SITE_CTX" get gridnetwork grid -o json \
+      | jq -er '(.status.remoteProviderCount // 0)') || die "read the site remote provider count before hub publication"
     site_route_providers vcr hub-local
     helm_on "$HUB_CTX" "$NS" grid-site grid-site "${HUB_SITE_ARGS[@]}" "${SR[@]}" \
       || die "publish the allowlisted hub-local provider under signed state"
@@ -2579,7 +2585,8 @@ assert_signed_state() {
       --set inferenceProviders.signed-state-probe.endpoint=http://127.0.0.1:8000 \
       || die "publish a fresh hub provider under signed state"
   fi
-  eventually "site accepts the named signed provider update from the hub" site_received_signed_probe
+  eventually "site accepts the named signed provider update from the hub" \
+    site_received_signed_probe "$remote_provider_count_before"
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   helm_on "$SITE_CTX" "$NS" grid-site grid-site "${SITE_SITE_ARGS[@]}" \
     --set gridNetwork.peerTrust.signedState=off || die "turn signed state off on the site"
@@ -3070,7 +3077,6 @@ cmd_test() {
       assert_site_route
     fi
     assert_ha
-    assert_site_route
     assert_rotation_declared
     assert_pin_no_renewal
     assert_renewal

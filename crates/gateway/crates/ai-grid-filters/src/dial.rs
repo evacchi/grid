@@ -1140,6 +1140,7 @@ mod tests {
                     admission: AdmissionState::default(),
                     cluster: (*cluster).to_owned(),
                     credential: None,
+                    expires_at: None,
                     fresh: true,
                     kind: CapabilityKind::InferenceModel,
                     name: "llama".to_owned(),
